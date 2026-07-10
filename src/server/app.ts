@@ -1,5 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import { collectChatText } from "../adapters/types.js";
@@ -16,8 +16,12 @@ export interface ServerOptions {
   registry: AdapterRegistry;
   /** Preferred adapter when model has no prefix */
   adapter?: string;
-  /** Optional bearer token; if set, Authorization: Bearer <token> required */
-  token?: string;
+  /**
+   * Required bearer token. Every request must send `Authorization: Bearer <token>`.
+   * No CORS middleware: SDK/script clients don't need it; open CORS would let any
+   * same-machine browser tab call the gateway.
+   */
+  token: string;
   /** Log requests to stderr */
   verbose?: boolean;
 }
@@ -29,21 +33,26 @@ function unauthorized() {
   });
 }
 
+function tokensEqual(got: string, expected: string): boolean {
+  const gotBuf = Buffer.from(got);
+  const expectedBuf = Buffer.from(expected);
+  if (gotBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(gotBuf, expectedBuf);
+}
+
 export function createApp(opts: ServerOptions): Hono {
   const app = new Hono();
-  const { registry, verbose } = opts;
+  const { registry, verbose, token } = opts;
 
-  app.use("*", cors());
+  // No CORS: this gateway is for local SDK/script clients, not browser pages.
+  // Wildcard CORS + loopback would let any tab on the machine read agent output.
 
   app.use("*", async (c, next) => {
-    if (opts.token) {
-      const auth = c.req.header("authorization") || "";
-      const m = /^Bearer\s+(.+)$/i.exec(auth);
-      const got = m?.[1]?.trim();
-      // Accept common OpenAI-client placeholders when token is set to the same value
-      if (!got || got !== opts.token) {
-        return unauthorized();
-      }
+    const auth = c.req.header("authorization") || "";
+    const m = /^Bearer\s+(.+)$/i.exec(auth);
+    const got = m?.[1]?.trim();
+    if (!got || !tokensEqual(got, token)) {
+      return unauthorized();
     }
     await next();
   });

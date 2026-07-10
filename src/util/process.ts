@@ -30,6 +30,7 @@ export function runCommand(
 
     const child = spawn(command, args, {
       cwd,
+      // TODO(P1): scrub parent env — today children inherit the full process.env.
       env: { ...process.env, ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -86,15 +87,14 @@ export function runCommand(
   });
 }
 
-/** Resolve a binary from PATH; returns absolute path or null. */
+/** Resolve a binary from PATH; returns absolute path or null. No shell involved. */
 export async function which(binary: string): Promise<string | null> {
-  const result = await runCommand("sh", ["-c", `command -v ${shellQuote(binary)}`], {
-    timeoutMs: 5_000,
-  });
-  const path = result.stdout.trim();
-  return result.code === 0 && path ? path : null;
-}
-
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
+  try {
+    const result = await runCommand("which", [binary], { timeoutMs: 5_000 });
+    const path = result.stdout.trim().split(/\r?\n/)[0]?.trim() ?? "";
+    return result.code === 0 && path ? path : null;
+  } catch {
+    // Missing `which` binary (or spawn failure) → treat as not found.
+    return null;
+  }
 }
