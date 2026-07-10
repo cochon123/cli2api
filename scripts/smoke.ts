@@ -1,16 +1,22 @@
 /**
  * Phase 0 smoke test:
- * 1. Start server with mock adapter
+ * 1. Start server with mock adapter + required bearer token
  * 2. Hit /health, /v1/models, /v1/chat/completions (stream + non-stream)
- * 3. Exit non-zero on failure
+ * 3. Confirm unauthenticated requests are rejected
+ * 4. Exit non-zero on failure
  */
 import { createRegistry } from "../src/adapters/registry.js";
 import { listen } from "../src/server/listen.js";
 
 const PORT = 13927;
+const TOKEN = "smoke-test-token";
 
 function assert(cond: unknown, msg: string): asserts cond {
   if (!cond) throw new Error(msg);
+}
+
+function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  return { Authorization: `Bearer ${TOKEN}`, ...extra };
 }
 
 async function main() {
@@ -19,15 +25,19 @@ async function main() {
     registry,
     host: "127.0.0.1",
     port: PORT,
+    token: TOKEN,
     verbose: false,
   });
   const base = `http://127.0.0.1:${PORT}`;
 
   try {
-    const health = await fetch(`${base}/health`).then((r) => r.json());
+    const denied = await fetch(`${base}/health`);
+    assert(denied.status === 401, "unauthenticated health must be 401");
+
+    const health = await fetch(`${base}/health`, { headers: authHeaders() }).then((r) => r.json());
     assert(health.ok === true, "health.ok");
 
-    const models = await fetch(`${base}/v1/models`).then((r) => r.json());
+    const models = await fetch(`${base}/v1/models`, { headers: authHeaders() }).then((r) => r.json());
     assert(Array.isArray(models.data) && models.data.length >= 2, "models.data");
     assert(
       models.data.some((m: { id: string }) => m.id === "mock/echo"),
@@ -37,7 +47,7 @@ async function main() {
     // Non-stream
     const completion = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         model: "mock/echo",
         messages: [{ role: "user", content: "ping-from-smoke" }],
@@ -51,7 +61,7 @@ async function main() {
     // Stream
     const streamRes = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         model: "mock/echo",
         stream: true,

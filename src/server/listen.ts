@@ -7,7 +7,8 @@ export interface ListenOptions {
   host?: string;
   port?: number;
   adapter?: string;
-  token?: string;
+  /** Required bearer token (generate one at startup if the operator did not set it). */
+  token: string;
   verbose?: boolean;
 }
 

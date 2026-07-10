@@ -9,17 +9,24 @@ Point any OpenAI SDK / benchmark at localhost and run against **Codex** (or the 
 ## 30-second start
 
 ```bash
-cd Documents/mini-project/cli2api
+# from the project root
 npm install
 npm run serve -- --adapter mock --port 3927
 ```
 
-In your app / `.env`:
+The server prints a generated bearer token on stderr if you did not set one. Copy it into your client env:
 
 ```bash
 OPENAI_BASE_URL=http://127.0.0.1:3927/v1
-OPENAI_API_KEY=local-dev
+OPENAI_API_KEY=<token printed by serve>
 OPENAI_MODEL=mock/echo
+```
+
+Or pin the token yourself:
+
+```bash
+CLI2API_TOKEN=dev-secret npm run serve -- --adapter mock
+# OPENAI_API_KEY=dev-secret
 ```
 
 Smoke:
@@ -41,7 +48,7 @@ npm run serve -- --adapter codex --port 3927
 
 ```bash
 OPENAI_BASE_URL=http://127.0.0.1:3927/v1
-OPENAI_API_KEY=local-dev
+OPENAI_API_KEY=<token printed by serve>
 OPENAI_MODEL=codex/default
 ```
 
@@ -72,7 +79,7 @@ After `npm run build`, the bin is `cli2api`.
 | Var | Meaning |
 |-----|---------|
 | `CLI2API_ADAPTER` | Default adapter (`mock` \| `codex`) |
-| `CLI2API_TOKEN` | Optional bearer token (clients must send matching `Authorization`) |
+| `CLI2API_TOKEN` | Bearer token (auto-generated for the session if unset) |
 | `CLI2API_CODEX_BIN` | Path/name of Codex binary |
 | `CLI2API_CWD` | Working directory for CLI adapters |
 
@@ -82,6 +89,8 @@ After `npm run build`, the bin is `cli2api`.
 - `GET /v1/models`
 - `POST /v1/chat/completions` — non-stream + `stream: true` (SSE)
 
+All endpoints require `Authorization: Bearer <token>`.
+
 Model ids: `adapter/model` — e.g. `mock/echo`, `codex/default`, `codex/o3`.
 
 ## Phase 0 scope
@@ -90,9 +99,12 @@ Model ids: `adapter/model` — e.g. `mock/echo`, `codex/default`, `codex/o3`.
 - [x] Mock adapter (instant env-swap proof)
 - [x] Codex adapter via `codex exec --json`
 - [x] Loopback-only bind + `doctor` / `completion`
+- [x] Required bearer token (auto-generated if unset)
+- [x] No open CORS (SDK/script clients only)
 - [ ] OpenCode / cursor-agent adapters
 - [ ] True token streaming from CLI JSONL
 - [ ] Tool calling / Responses API
+- [ ] Env scrubbing for spawned CLI processes (child still inherits parent env today)
 
 ## Project layout
 
@@ -109,5 +121,9 @@ scripts/smoke.ts
 ## Safety
 
 - Default bind: `127.0.0.1` only (refuse non-loopback hosts).
-- Codex adapter defaults to `--sandbox read-only`.
+- Bearer token required on every request; generated on startup if unset.
+- No CORS middleware — browser tabs on the same machine cannot read responses via `fetch` from arbitrary origins.
+- Codex adapter defaults to `--sandbox read-only` (blocks writes; does **not** block reading files the agent is asked about).
+- Spawn uses argv arrays only (`shell: false`); no prompt concatenation into a shell string.
+- **Not yet:** child env scrubbing — spawned CLIs currently inherit the full parent environment. Tracked for a later phase.
 - You are responsible for complying with each CLI vendor’s terms for local use.

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { randomUUID } from "node:crypto";
 import { Command } from "commander";
 import { createRegistry } from "./adapters/registry.js";
 import { collectChatText } from "./adapters/types.js";
@@ -41,7 +42,7 @@ program
   .option("-p, --port <port>", "Port to listen on", String(DEFAULT_PORT))
   .option("-H, --host <host>", "Host to bind (loopback only)", "127.0.0.1")
   .option("-a, --adapter <id>", "Default adapter when model has no prefix (mock|codex)", env("CLI2API_ADAPTER") ?? "mock")
-  .option("-t, --token <token>", "Optional bearer token (also CLI2API_TOKEN)", env("CLI2API_TOKEN"))
+  .option("-t, --token <token>", "Bearer token (also CLI2API_TOKEN); auto-generated if omitted", env("CLI2API_TOKEN"))
   .option("--codex-bin <path>", "Codex binary path", env("CLI2API_CODEX_BIN"))
   .option("--cwd <dir>", "Working directory for CLI adapters", env("CLI2API_CWD"))
   .option("-v, --verbose", "Log requests", false)
@@ -52,6 +53,8 @@ program
       cwd: opts.cwd,
     });
     const port = Number(opts.port) || DEFAULT_PORT;
+    const tokenProvided = Boolean(opts.token);
+    const token: string = opts.token || randomUUID();
 
     try {
       const server = await listen({
@@ -59,7 +62,7 @@ program
         host: opts.host,
         port,
         adapter: opts.adapter,
-        token: opts.token || undefined,
+        token,
         verbose: opts.verbose,
       });
 
@@ -69,10 +72,13 @@ program
       console.error(`  health:   ${base}/health`);
       console.error(`  models:   ${base}/v1/models`);
       console.error(`  chat:     ${base}/v1/chat/completions`);
+      if (!tokenProvided) {
+        console.error(`  token:    ${token}  (generated for this session — set CLI2API_TOKEN to pin it)`);
+      }
       console.error("");
       console.error("Env swap:");
       console.error(`  OPENAI_BASE_URL=${base}/v1`);
-      console.error(`  OPENAI_API_KEY=${opts.token || "local-dev"}`);
+      console.error(`  OPENAI_API_KEY=${token}`);
       if (opts.adapter === "codex") {
         console.error(`  OPENAI_MODEL=codex/default`);
       } else {
