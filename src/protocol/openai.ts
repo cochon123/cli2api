@@ -105,7 +105,12 @@ export function buildCompletionResponse(opts: {
 export function buildChunk(opts: {
   id: string;
   model: string;
-  delta?: { role?: "assistant"; content?: string };
+  delta?: {
+    role?: "assistant";
+    content?: string;
+    reasoning?: string;
+    reasoning_content?: string;
+  };
   finishReason?: "stop" | "length" | "error" | null;
 }): ChatCompletionChunk {
   return {

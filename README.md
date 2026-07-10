@@ -102,7 +102,9 @@ Model ids: `adapter/model` — e.g. `mock/echo`, `codex/default`, `codex/o3`.
 - [x] Required bearer token (auto-generated if unset)
 - [x] No open CORS (SDK/script clients only)
 - [ ] OpenCode / cursor-agent adapters
-- [ ] True token streaming from CLI JSONL
+- [x] Real JSONL streaming from Codex (`codex exec --json` line-by-line)
+  - Pre-answer events → `delta.reasoning` / `reasoning_content`
+  - Final `agent_message` → word-by-word fake-stream on `delta.content`
 - [ ] Tool calling / Responses API
 - [ ] Env scrubbing for spawned CLI processes (child still inherits parent env today)
 
