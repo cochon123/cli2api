@@ -1,0 +1,1154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Local CLI → AI API — Build Plan</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0f1412;
+      --bg-elev: #171d1a;
+      --bg-soft: #1c2420;
+      --ink: #e8efe9;
+      --muted: #8fa398;
+      --faint: #5c6f64;
+      --line: #2a3530;
+      --accent: #c4f542;
+      --accent-dim: rgba(196, 245, 66, 0.12);
+      --warn: #f0b429;
+      --ok: #5ddea8;
+      --danger: #ff7a6b;
+      --serif: "Newsreader", Georgia, serif;
+      --sans: "DM Sans", system-ui, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+      --max: 920px;
+      --radius: 10px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background:
+        radial-gradient(1200px 600px at 10% -10%, #1a2a22 0%, transparent 55%),
+        radial-gradient(900px 500px at 100% 0%, #1a2218 0%, transparent 50%),
+        linear-gradient(180deg, #121816 0%, var(--bg) 40%);
+      color: var(--ink);
+      line-height: 1.55;
+      font-size: 16px;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    .wrap {
+      max-width: var(--max);
+      margin: 0 auto;
+      padding: 0 1.5rem 5rem;
+    }
+
+    /* —— Hero —— */
+    header.hero {
+      padding: 4.5rem 0 3rem;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 2.5rem;
+    }
+    .eyebrow {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin: 0 0 1rem;
+    }
+    h1 {
+      font-family: var(--serif);
+      font-weight: 600;
+      font-size: clamp(2.2rem, 5vw, 3.1rem);
+      line-height: 1.12;
+      letter-spacing: -0.02em;
+      margin: 0 0 1rem;
+      max-width: 16ch;
+    }
+    .lede {
+      font-size: 1.15rem;
+      color: var(--muted);
+      max-width: 42rem;
+      margin: 0 0 1.75rem;
+    }
+    .hero-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .chip {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      padding: 0.35rem 0.65rem;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--muted);
+      background: var(--bg-elev);
+    }
+    .chip.on {
+      border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+      color: var(--accent);
+      background: var(--accent-dim);
+    }
+
+    /* —— Nav —— */
+    nav.toc {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--line);
+      margin: 0 -1.5rem 2.5rem;
+      padding: 0.75rem 1.5rem;
+      overflow-x: auto;
+    }
+    nav.toc ol {
+      display: flex;
+      gap: 1.25rem;
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      white-space: nowrap;
+    }
+    nav.toc a {
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-weight: 500;
+    }
+    nav.toc a:hover { color: var(--ink); text-decoration: none; }
+
+    /* —— Sections —— */
+    section {
+      margin-bottom: 3.25rem;
+      scroll-margin-top: 3.5rem;
+    }
+    h2 {
+      font-family: var(--serif);
+      font-size: 1.65rem;
+      font-weight: 600;
+      margin: 0 0 0.75rem;
+      letter-spacing: -0.015em;
+    }
+    h3 {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin: 1.75rem 0 0.5rem;
+      color: var(--ink);
+    }
+    p { margin: 0 0 1rem; color: var(--muted); }
+    p strong, li strong { color: var(--ink); font-weight: 600; }
+    ul, ol { margin: 0 0 1rem; padding-left: 1.2rem; color: var(--muted); }
+    li { margin-bottom: 0.4rem; }
+    li::marker { color: var(--faint); }
+
+    .callout {
+      border: 1px solid var(--line);
+      border-left: 3px solid var(--accent);
+      background: var(--bg-elev);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: 1rem 1.15rem;
+      margin: 1.25rem 0;
+    }
+    .callout.warn { border-left-color: var(--warn); }
+    .callout.danger { border-left-color: var(--danger); }
+    .callout p:last-child { margin-bottom: 0; }
+    .callout .label {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--accent);
+      margin-bottom: 0.35rem;
+    }
+    .callout.warn .label { color: var(--warn); }
+    .callout.danger .label { color: var(--danger); }
+
+    /* —— Diagram —— */
+    .flow {
+      display: grid;
+      gap: 0.65rem;
+      margin: 1.5rem 0;
+    }
+    @media (min-width: 720px) {
+      .flow {
+        grid-template-columns: 1fr auto 1fr auto 1fr auto 1fr;
+        align-items: stretch;
+      }
+    }
+    .node {
+      background: var(--bg-soft);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 0.9rem 1rem;
+      min-height: 100%;
+    }
+    .node.accent {
+      border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
+      background: var(--accent-dim);
+    }
+    .node .kicker {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--faint);
+      margin-bottom: 0.35rem;
+    }
+    .node.accent .kicker { color: color-mix(in srgb, var(--accent) 70%, var(--muted)); }
+    .node .title {
+      font-weight: 600;
+      font-size: 0.95rem;
+      color: var(--ink);
+      margin-bottom: 0.25rem;
+    }
+    .node .sub {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin: 0;
+      line-height: 1.4;
+    }
+    .arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      padding: 0.25rem 0;
+    }
+    @media (max-width: 719px) {
+      .arrow { transform: rotate(90deg); height: 1.5rem; }
+    }
+
+    /* —— Cards / grids —— */
+    .grid-2 {
+      display: grid;
+      gap: 0.85rem;
+      margin: 1.25rem 0;
+    }
+    @media (min-width: 640px) {
+      .grid-2 { grid-template-columns: 1fr 1fr; }
+    }
+    .grid-3 {
+      display: grid;
+      gap: 0.85rem;
+      margin: 1.25rem 0;
+    }
+    @media (min-width: 720px) {
+      .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+    }
+    .card {
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1.1rem 1.15rem;
+    }
+    .card h3 { margin-top: 0; font-size: 0.95rem; }
+    .card p { font-size: 0.9rem; margin-bottom: 0; }
+    .card .num {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--accent);
+      margin-bottom: 0.4rem;
+    }
+
+    /* —— Code —— */
+    pre {
+      margin: 1rem 0;
+      padding: 1rem 1.1rem;
+      background: #0a0e0c;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      line-height: 1.55;
+      color: #c8d6cc;
+    }
+    code {
+      font-family: var(--mono);
+      font-size: 0.85em;
+      background: var(--bg-soft);
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+      color: var(--ink);
+    }
+    pre code { background: none; padding: 0; font-size: inherit; }
+    .cmt { color: #5c6f64; }
+    .key { color: #9fd4ff; }
+    .str { color: #c4f542; }
+    .val { color: #f0b429; }
+
+    /* —— Table —— */
+    .table-wrap {
+      overflow-x: auto;
+      margin: 1.25rem 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.88rem;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.7rem 0.9rem;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+    }
+    th {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--faint);
+      background: var(--bg-elev);
+      font-weight: 500;
+    }
+    tr:last-child td { border-bottom: none; }
+    td { color: var(--muted); }
+    td:first-child { color: var(--ink); font-weight: 500; white-space: nowrap; }
+
+    /* —— Timeline —— */
+    .phases {
+      border-left: 2px solid var(--line);
+      margin: 1.5rem 0 0 0.4rem;
+      padding-left: 1.35rem;
+    }
+    .phase {
+      position: relative;
+      margin-bottom: 1.75rem;
+    }
+    .phase::before {
+      content: "";
+      position: absolute;
+      left: -1.6rem;
+      top: 0.35rem;
+      width: 0.65rem;
+      height: 0.65rem;
+      border-radius: 50%;
+      background: var(--accent);
+      box-shadow: 0 0 0 3px var(--bg);
+    }
+    .phase .when {
+      font-family: var(--mono);
+      font-size: 0.7rem;
+      color: var(--accent);
+      margin-bottom: 0.25rem;
+    }
+    .phase h3 { margin: 0 0 0.4rem; }
+    .phase ul { margin-bottom: 0; }
+
+    /* —— Env swap demo —— */
+    .swap {
+      display: grid;
+      gap: 0.75rem;
+      margin: 1.25rem 0;
+    }
+    @media (min-width: 700px) {
+      .swap { grid-template-columns: 1fr auto 1fr; align-items: center; }
+    }
+    .swap .box {
+      background: #0a0e0c;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 1rem;
+    }
+    .swap .box.after {
+      border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+    }
+    .swap .box .lbl {
+      font-family: var(--mono);
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--faint);
+      margin-bottom: 0.5rem;
+    }
+    .swap .box.after .lbl { color: var(--accent); }
+    .swap pre { margin: 0; padding: 0; border: none; background: transparent; }
+    .swap .mid {
+      text-align: center;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+    }
+
+    footer {
+      margin-top: 3rem;
+      padding-top: 1.5rem;
+      border-top: 1px solid var(--line);
+      font-size: 0.85rem;
+      color: var(--faint);
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header class="hero">
+      <p class="eyebrow">Architecture plan · local-only · open source</p>
+      <h1>CLI → AI API</h1>
+      <p class="lede">
+        A Clerk-like drop-in for local agent CLIs: expose Claude Code, Codex, OpenCode,
+        and friends as an OpenAI-compatible HTTP API on localhost — so any app can swap
+        one env value and keep using the model you already pay for / authenticate via CLI.
+      </p>
+      <div class="hero-meta">
+        <span class="chip on">localhost only</span>
+        <span class="chip on">open source</span>
+        <span class="chip">OpenAI-compatible</span>
+        <span class="chip">read-only default</span>
+        <span class="chip">required token</span>
+        <span class="chip">one-line env swap</span>
+      </div>
+    </header>
+
+    <nav class="toc" aria-label="Table of contents">
+      <ol>
+        <li><a href="#pitch">1. Pitch</a></li>
+        <li><a href="#scope">2. Scope</a></li>
+        <li><a href="#usecase">3. Killer use case</a></li>
+        <li><a href="#arch">4. Architecture</a></li>
+        <li><a href="#api">5. API surface</a></li>
+        <li><a href="#adapters">6. Adapters</a></li>
+        <li><a href="#dx">7. DX &amp; agents</a></li>
+        <li><a href="#build">8. Build plan</a></li>
+        <li><a href="#risks">9. Risks</a></li>
+        <li><a href="#security">10. Security</a></li>
+        <li><a href="#name">11. Naming</a></li>
+        <li><a href="#lessons">12. Lessons learned</a></li>
+      </ol>
+    </nav>
+
+    <!-- 1 -->
+    <section id="pitch">
+      <h2>1. The pitch</h2>
+      <p>
+        Auth products won by being <strong>boring infrastructure</strong>: one SDK, one env,
+        works everywhere. Coding CLIs already own the hard parts — login, quotas, model
+        routing, tool loops — but they speak <em>terminal</em>, not <em>HTTP</em>.
+      </p>
+      <p>
+        This project is the missing adapter layer: a tiny local gateway that speaks the
+        API shape every LLM client already knows, and translates each request into the
+        right CLI invocation (or local SDK) for the backend you choose.
+      </p>
+      <div class="callout">
+        <div class="label">North star</div>
+        <p>
+          <code>OPENAI_BASE_URL=http://127.0.0.1:3927/v1</code> — and your benchmark,
+          eval harness, or side project suddenly runs on whatever CLI is installed on
+          this machine. No cloud proxy. No shared multi-tenant service.
+        </p>
+      </div>
+      <div class="callout">
+        <div class="label">Audience</div>
+        <p>
+          Personal daily driver <strong>and</strong> open-source for others. Defaults must
+          be safe for a stranger who clones the repo and runs <code>serve</code> with no
+          extra flags — not just for the author who already knows the threat model.
+        </p>
+      </div>
+    </section>
+
+    <!-- 2 -->
+    <section id="scope">
+      <h2>2. Hard scope (local only)</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>In scope</h3>
+          <p>
+            Bind to loopback only (no override). Single-user machine. <strong>Required</strong>
+            local bearer token (auto-generate if unset). Read-only agent sandbox by default.
+            Pluggable backends for CLIs you run yourself. OpenAI-compatible chat + models.
+            Streaming. Clear docs + Cursor skill + CLI. MIT open source.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Out of scope</h3>
+          <p>
+            Public SaaS, multi-tenant hosting, exposing your CLI auth to the internet,
+            open CORS for arbitrary browser tabs, reverse-engineering paid APIs for
+            redistribution, or anything that looks like “rent out Anthropic/OpenAI via
+            someone else’s subscription.”
+          </p>
+        </div>
+      </div>
+      <div class="callout warn">
+        <div class="label">Legal / ToS posture</div>
+        <p>
+          Ship as a <strong>local developer tool</strong> (personal use + open source).
+          Document that users must comply with each CLI vendor’s terms. Default bind
+          <code>127.0.0.1</code> only — <strong>refuse</strong> non-loopback binds with no
+          escape hatch. No “deploy this as a shared API” docs.
+        </p>
+      </div>
+    </section>
+
+    <!-- 3 -->
+    <section id="usecase">
+      <h2>3. Killer use case: one env swap</h2>
+      <p>
+        You already have a benchmark with a working OpenAI-shaped client. You don’t want
+        to rewrite the harness — you want the harness to call <em>your</em> CLI.
+      </p>
+
+      <div class="swap">
+        <div class="box">
+          <div class="lbl">Before · cloud API</div>
+          <pre><code><span class="key">OPENAI_API_KEY</span>=sk-...
+<span class="key">OPENAI_BASE_URL</span>=https://api.openai.com/v1
+<span class="key">OPENAI_MODEL</span>=gpt-4.1</code></pre>
+        </div>
+        <div class="mid">→ swap →</div>
+        <div class="box after">
+          <div class="lbl">After · local CLI gateway</div>
+          <pre><code><span class="key">OPENAI_API_KEY</span>=&lt;token from serve&gt;
+<span class="key">OPENAI_BASE_URL</span>=http://127.0.0.1:3927/v1
+<span class="key">OPENAI_MODEL</span>=codex/default</code></pre>
+        </div>
+      </div>
+
+      <pre><code><span class="cmt"># terminal A — start the gateway once (prints token if unset)</span>
+npx cli2api serve --adapter codex --port 3927
+
+<span class="cmt"># terminal B — run your existing benchmark with the printed token as OPENAI_API_KEY</span>
+npm run bench</code></pre>
+
+      <div class="callout warn">
+        <div class="label">What the numbers actually mean</div>
+        <p>
+          A CLI adapter is an <strong>agent loop</strong> (tools, repo context, timeouts,
+          sandbox) wearing a model id — not a raw completion endpoint. Benchmarks that
+          compare <code>gpt-4.1</code> cloud vs <code>codex/default</code> are comparing a
+          model to an agent-with-guardrails. Document that honestly in the capability matrix;
+          don’t pretend the base-URL swap makes them equivalent experiments.
+        </p>
+      </div>
+    </section>
+
+    <!-- 4 -->
+    <section id="arch">
+      <h2>4. Architecture</h2>
+      <p>
+        Three layers: a thin HTTP façade, a normalizer that maps OpenAI request/response
+        shapes, and adapters that know how to talk to each CLI.
+      </p>
+
+      <div class="flow">
+        <div class="node">
+          <div class="kicker">Client</div>
+          <div class="title">Your app / bench</div>
+          <p class="sub">OpenAI SDK, litellm, custom fetch, eval harness</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node accent">
+          <div class="kicker">Gateway</div>
+          <div class="title">cli2api</div>
+          <p class="sub">loopback HTTP · required bearer · no open CORS · /v1/chat/completions</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node">
+          <div class="kicker">Adapter</div>
+          <div class="title">Backend plugin</div>
+          <p class="sub">argv spawn · read-only sandbox default · map model ids</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="node">
+          <div class="kicker">Runtime</div>
+          <div class="title">Local CLI</div>
+          <p class="sub">claude · codex · opencode · cursor agent · …</p>
+        </div>
+      </div>
+
+      <h3>Core components</h3>
+      <div class="grid-3">
+        <div class="card">
+          <div class="num">01</div>
+          <h3>HTTP server</h3>
+          <p>Fast local server (Node). Loopback bind only. Required bearer token. No open CORS. Request logging for debug.</p>
+        </div>
+        <div class="card">
+          <div class="num">02</div>
+          <h3>Protocol layer</h3>
+          <p>Parse OpenAI chat payloads, emit OpenAI responses + SSE chunks. Prefer an event union that keeps tool/agent events distinct even before full function-calling parity.</p>
+        </div>
+        <div class="card">
+          <div class="num">03</div>
+          <h3>Adapter registry</h3>
+          <p>Discover adapters by name. Each implements <code>listModels</code>, <code>chat</code>, optional <code>stream</code>.</p>
+        </div>
+        <div class="card">
+          <div class="num">04</div>
+          <h3>Process manager</h3>
+          <p>Spawn via fixed argv arrays (<code>shell: false</code>). Timeouts, concurrency limits, cwd sandbox, env scrubbing (planned), cancel on client disconnect.</p>
+        </div>
+        <div class="card">
+          <div class="num">05</div>
+          <h3>Config</h3>
+          <p><code>~/.config/cli2api/</code> + project config. Model aliases, default adapter, ports, pinned token.</p>
+        </div>
+        <div class="card">
+          <div class="num">06</div>
+          <h3>Observability</h3>
+          <p>Local request log, latency, token estimates when available, adapter stderr capture for failures.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5 -->
+    <section id="api">
+      <h2>5. API surface (compatibility first)</h2>
+      <p>
+        Don’t invent a new protocol. Implement the subset that makes 90% of clients work
+        with zero code changes.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Endpoint</th>
+              <th>Priority</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>POST /v1/chat/completions</code></td>
+              <td>P0</td>
+              <td>Non-stream + <code>stream: true</code> SSE. Map messages → CLI prompt.</td>
+            </tr>
+            <tr>
+              <td><code>GET /v1/models</code></td>
+              <td>P0</td>
+              <td>Return adapter-prefixed ids: <code>claude-code/sonnet</code>.</td>
+            </tr>
+            <tr>
+              <td><code>POST /v1/responses</code></td>
+              <td>P1</td>
+              <td>Newer OpenAI Responses API — add when clients need it.</td>
+            </tr>
+            <tr>
+              <td><code>POST /v1/embeddings</code></td>
+              <td>P2</td>
+              <td>Only if an adapter can provide it; otherwise 501 with clear error.</td>
+            </tr>
+            <tr>
+              <td><code>GET /health</code></td>
+              <td>P0</td>
+              <td>Adapter ready? CLI binary found? Auth ok?</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Model ID convention</h3>
+      <pre><code><span class="str">adapter</span>/<span class="str">model</span>           <span class="cmt"># claude-code/sonnet</span>
+<span class="str">adapter</span>/<span class="str">alias</span>           <span class="cmt"># codex/default</span>
+<span class="str">alias</span>                   <span class="cmt"># from config: "bench" → claude-code/opus</span></code></pre>
+
+      <div class="callout">
+        <div class="label">Honest capability matrix</div>
+        <p>
+          CLIs are not full chat APIs — and they are not raw models either. Document
+          per-adapter: streaming quality, multi-turn fidelity, tool/function calling,
+          vision, system prompt support, max context, <strong>and</strong> whether the
+          backend is agent-mode (tools + repo) vs completion-mode. Prefer clear 501/422
+          over silent degradation.
+        </p>
+      </div>
+    </section>
+
+    <!-- 6 -->
+    <section id="adapters">
+      <h2>6. Adapter strategy</h2>
+      <p>
+        Each CLI is different. Some have headless / print modes; some need TTY tricks;
+        some expose a local SDK. Start with the easiest reliable path per tool, then
+        improve.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Adapter</th>
+              <th>Likely approach</th>
+              <th>MVP difficulty</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Codex CLI</td>
+              <td><code>codex exec --json</code>; argv spawn; default <code>-s read-only</code></td>
+              <td>Done (P0)</td>
+            </tr>
+            <tr>
+              <td>Claude Code</td>
+              <td>Headless / <code>-p</code> print mode; locked-down permission mode / tool allowlist by default</td>
+              <td>Medium</td>
+            </tr>
+            <tr>
+              <td>OpenCode</td>
+              <td>Headless/API mode; prefer read-only “plan” agent over full-access “build”</td>
+              <td>Depends</td>
+            </tr>
+            <tr>
+              <td>Generic shell</td>
+              <td><strong>Deferred / discouraged.</strong> Template + <code>{{prompt}}</code> is the textbook injection shape. Prefer first-class adapters.</td>
+              <td>Avoid for MVP</td>
+            </tr>
+            <tr>
+              <td>Mock</td>
+              <td>Deterministic replies for CI of the gateway itself</td>
+              <td>Done (P0)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Adapter interface (sketch)</h3>
+      <pre><code><span class="key">type</span> ChatEvent =
+  | { type: <span class="str">"delta"</span>; text: <span class="str">string</span> }
+  | { type: <span class="str">"tool.started"</span>; name: <span class="str">string</span>; id?: <span class="str">string</span> }   <span class="cmt">// keep even if OpenAI tools deferred</span>
+  | { type: <span class="str">"tool.completed"</span>; name: <span class="str">string</span>; id?: <span class="str">string</span> }
+  | { type: <span class="str">"done"</span>; finishReason: <span class="str">string</span> }
+  | { type: <span class="str">"error"</span>; message: <span class="str">string</span>; code?: <span class="str">string</span> }
+
+<span class="key">interface</span> Adapter {
+  id: <span class="str">string</span>
+  listModels(): Promise&lt;ModelInfo[]&gt;
+  chat(req: NormalizedChatRequest, signal: AbortSignal): AsyncIterable&lt;ChatEvent&gt;
+  health(): Promise&lt;HealthStatus&gt;
+}</code></pre>
+
+      <div class="callout">
+        <div class="label">Adapter sequencing</div>
+        <p>
+          Prove one adapter (Codex) end-to-end before going wide. Add Claude Code / OpenCode
+          only once they pass the same contract suite. Do not ship a generic shell-template
+          adapter to fake multi-backend breadth.
+        </p>
+      </div>
+
+      <p>
+        Keep adapters in-repo first (<code>adapters/codex</code>, …). Later: load
+        external adapters from a path for power users — still local, still not a marketplace
+        for piracy.
+      </p>
+    </section>
+
+    <!-- 7 -->
+    <section id="dx">
+      <h2>7. Agent-friendly DX</h2>
+      <p>
+        If agents can’t install and wire this in one shot, it fails the Clerk test.
+        Ship three surfaces that all say the same thing.
+      </p>
+
+      <div class="grid-3">
+        <div class="card">
+          <div class="num">CLI</div>
+          <h3><code>cli2api</code></h3>
+          <p>
+            <code>serve</code>, <code>adapters</code>, <code>doctor</code>,
+            <code>models</code>, <code>completion</code> (smoke test). Machine-readable
+            <code>--json</code> everywhere.
+          </p>
+        </div>
+        <div class="card">
+          <div class="num">Docs</div>
+          <h3>Short + copy-paste</h3>
+          <p>
+            One README “30-second start”, per-adapter pages, capability matrix, env
+            cheat sheet for OpenAI / Anthropic / litellm clients. Explicit “not yet”
+            list (env scrubbing, etc.).
+          </p>
+        </div>
+        <div class="card">
+          <div class="num">Skill</div>
+          <h3>Cursor / agent skill</h3>
+          <p>
+            SKILL.md: when to use, how to start server, which env vars to set, how to
+            debug <code>doctor</code>, never bind public interfaces, always use the
+            printed token. Paths relative to project root — never hardcode one machine.
+          </p>
+        </div>
+      </div>
+
+      <h3>What an agent should be able to do unaided</h3>
+      <ol>
+        <li>Detect installed CLIs via <code>cli2api doctor</code></li>
+        <li>Start gateway on a free port and capture the printed token</li>
+        <li>Patch the user’s <code>.env</code> with base URL + token + model id</li>
+        <li>Run a one-shot smoke completion</li>
+        <li>Explain adapter limitations if the bench needs tools/vision</li>
+      </ol>
+
+      <pre><code><span class="cmt"># agent-friendly smoke</span>
+cli2api doctor --json
+cli2api serve --adapter codex --port 3927 &amp;
+cli2api completion --model codex/default -p <span class="str">"ping"</span></code></pre>
+    </section>
+
+    <!-- 8 -->
+    <section id="build">
+      <h2>8. Suggested build plan</h2>
+      <div class="phases">
+        <div class="phase">
+          <div class="when">Phase 0 · weekend spike · DONE in cli2api</div>
+          <h3>Prove the env-swap fantasy</h3>
+          <ul>
+            <li>HTTP server + <code>/v1/chat/completions</code> (stream + non-stream)</li>
+            <li>Mock + Codex adapters; argv spawn; Codex <code>read-only</code> sandbox</li>
+            <li>Loopback-only bind (no override); required bearer token; no open CORS</li>
+            <li>README + skill + smoke test validating the env swap</li>
+          </ul>
+        </div>
+        <div class="phase">
+          <div class="when">Phase 1 · usable MVP</div>
+          <h3>Make it daily-driver for local evals (and safe for strangers)</h3>
+          <ul>
+            <li>True token streaming from CLI JSONL where available</li>
+            <li>Config file + model aliases + pinned token</li>
+            <li>Concurrency limit + timeouts + abort (harden)</li>
+            <li>Env scrubbing for spawned CLI processes</li>
+            <li>Second adapter (Claude Code or OpenCode) — same contract suite, still restrictive defaults</li>
+            <li>Richer <code>ChatEvent</code> union (tool started/completed) without claiming OpenAI tools parity yet</li>
+          </ul>
+        </div>
+        <div class="phase">
+          <div class="when">Phase 2 · fidelity</div>
+          <h3>Closer to a real API</h3>
+          <ul>
+            <li>Multi-turn session mapping (where CLI allows)</li>
+            <li>Tool/function calling passthrough if backend supports it</li>
+            <li>Better streaming chunking; usage estimates</li>
+            <li>Capability matrix tests per adapter (agent vs model disclosure)</li>
+            <li>Optional Responses API subset</li>
+          </ul>
+        </div>
+        <div class="phase">
+          <div class="when">Phase 3 · polish</div>
+          <h3>Clerk-level install feel</h3>
+          <ul>
+            <li>One-command install (npm primary)</li>
+            <li>Project init: write <code>.env.example</code> snippet</li>
+            <li>Beautiful failure messages (“codex not logged in → run X”)</li>
+            <li>Optional TUI status for live requests</li>
+            <li>Named opt-in profiles for write/network — never the default</li>
+          </ul>
+        </div>
+      </div>
+
+      <h3>Recommended stack (opinionated default)</h3>
+      <ul>
+        <li><strong>Runtime:</strong> TypeScript on Node 20+ — shipped in <code>cli2api</code></li>
+        <li><strong>HTTP:</strong> Hono — tiny surface</li>
+        <li><strong>Config:</strong> TOML/JSON + env overrides (P1)</li>
+        <li><strong>Tests:</strong> mock adapter + contract tests against OpenAI SDK</li>
+        <li><strong>Packaging:</strong> single CLI binary name, published as npm package first</li>
+      </ul>
+    </section>
+
+    <!-- 9 -->
+    <section id="risks">
+      <h2>9. Risks &amp; design decisions</h2>
+      <div class="grid-2">
+        <div class="card">
+          <h3>CLI ≠ chat API</h3>
+          <p>
+            Agent CLIs may inject system behavior, tools, or repo context. Decide:
+            “raw completion mode” vs “agent mode.” Expose as model variants or request flags.
+            Benchmark numbers against a cloud model API are not apples-to-apples.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Streaming fidelity</h3>
+          <p>
+            Many CLIs only emit final stdout. Start with fake-stream (chunk the final
+            answer) then upgrade adapters that support true token streams.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Auth &amp; secrets</h3>
+          <p>
+            Never scrape cloud API keys from CLI configs to call vendor HTTP APIs
+            directly unless the user explicitly opts into a documented “use my key”
+            path. Prefer invoking the CLI as the user does.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Concurrency</h3>
+          <p>
+            CLIs often assume one interactive session. Default concurrency=1 per adapter;
+            queue or reject with 429. Document rate limits honestly.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Headless = no human approver</h3>
+          <p>
+            Interactive CLIs ask a human before risky tools. Headless mode moves that job
+            into flags. Default every adapter to the CLI’s most restrictive mode
+            (Codex read-only, Claude allowlist/locked, OpenCode plan). Writes/network are
+            named opt-in profiles only.
+          </p>
+        </div>
+        <div class="card">
+          <h3>Vendor breakage</h3>
+          <p>
+            CLI flags change. Version-pin adapters, run <code>doctor</code> probes, and
+            keep a compatibility table in docs.
+          </p>
+        </div>
+      </div>
+
+      <div class="callout danger">
+        <div class="label">Non-goal reminder</div>
+        <p>
+          Do not build a hosted “bring your Claude Max, we expose an API to the world”
+          product. That is the illegal / ToS-hostile version of this idea. The product
+          is a <em>local developer tool</em>, like a reverse proxy for your own laptop —
+          open-sourced so others can run the same pattern on <em>their</em> machines.
+        </p>
+      </div>
+    </section>
+
+    <!-- 10 -->
+    <section id="security">
+      <h2>10. Security non-negotiables (open source)</h2>
+      <p>
+        Loopback binding alone is not enough. Same-machine browser tabs can still hit
+        <code>127.0.0.1</code>. Read-only sandbox stops disk writes; it does not stop the
+        agent from <em>reading</em> files and returning their contents. Defaults must close
+        both the “who can talk to the gateway” and “what the agent may do” paths.
+      </p>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Control</th>
+              <th>Rule</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Bind</td>
+              <td>Loopback only (<code>127.0.0.1</code> / <code>::1</code>). Refuse other hosts — no override flag.</td>
+              <td>Done</td>
+            </tr>
+            <tr>
+              <td>Auth</td>
+              <td>Bearer token required on every request. Auto-generate + print to stderr if unset.</td>
+              <td>Done</td>
+            </tr>
+            <tr>
+              <td>CORS</td>
+              <td>No CORS middleware by default. SDK/script clients don’t need it. If a local UI is added later, pin an explicit origin allowlist.</td>
+              <td>Done</td>
+            </tr>
+            <tr>
+              <td>Spawn</td>
+              <td>Fixed argv arrays only — never <code>shell: true</code>, never concatenate prompts into a shell string. Resolve binaries via <code>which</code> argv, not <code>sh -c</code>.</td>
+              <td>Done</td>
+            </tr>
+            <tr>
+              <td>Agent permissions</td>
+              <td>Default each adapter to the CLI’s most restrictive mode (Codex <code>read-only</code>). Opt-in profiles for write/network.</td>
+              <td>Done (Codex)</td>
+            </tr>
+            <tr>
+              <td>Env scrubbing</td>
+              <td>Don’t pass the full parent env to children forever. Document as not-yet until implemented.</td>
+              <td>Not yet</td>
+            </tr>
+            <tr>
+              <td>Generic shell adapter</td>
+              <td>Do not ship a <code>{{prompt}}</code> command template as the multi-adapter escape hatch.</td>
+              <td>Deferred</td>
+            </tr>
+            <tr>
+              <td>License</td>
+              <td>MIT in <code>package.json</code> <em>and</em> a real <code>LICENSE</code> file.</td>
+              <td>Done</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="callout warn">
+        <div class="label">Read-only ≠ private</div>
+        <p>
+          A malicious page that can call the gateway can still ask the agent to read and
+          print secrets. Token + no CORS close that path for browser JS. Keep treating
+          “who can call me” as a first-class control, not an afterthought to sandbox mode.
+        </p>
+      </div>
+    </section>
+
+    <!-- 11 -->
+    <section id="name">
+      <h2>11. Naming &amp; next step</h2>
+      <p>
+        Shipped name: <code>cli2api</code>
+        (<a href="https://github.com/cochon123/cli2api">github.com/cochon123/cli2api</a>).
+        Earlier working names: <code>cligateway</code>, <code>agentport</code>,
+        <code>loopback-llm</code>.
+      </p>
+      <div class="callout">
+        <div class="label">Suggested next move</div>
+        <p>
+          Phase 0 is done. Streaming path: JSONL line reader + reasoning summaries
+          (<code>model_reasoning_summary=detailed</code>) fake-streamed as reasoning,
+          final <code>agent_message</code> fake-streamed as content. Next: P1 — env
+          scrubbing, config file, second adapter, and keep §12 lessons updated.
+        </p>
+      </div>
+
+      <h3>Success criteria for Phase 0</h3>
+      <ul>
+        <li>Gateway starts in &lt;1s on localhost</li>
+        <li>OpenAI Python/JS SDK completes a chat with only base URL + API key changed</li>
+        <li>Your real benchmark runs end-to-end against the CLI adapter</li>
+        <li>Failure modes are readable (missing binary, not logged in, timeout)</li>
+        <li>Unauthenticated requests fail; non-loopback bind refused; Codex defaults read-only</li>
+      </ul>
+    </section>
+
+    <!-- 12 -->
+    <section id="lessons">
+      <h2>12. Lessons learned</h2>
+      <p>
+        Non-trivial findings from building Codex streaming + wiring Scrabble Bench.
+        Keep these in mind for the next adapter / streaming work — don’t rediscover them.
+      </p>
+
+      <h3>Codex <code>exec --json</code> is item-level, not token-level</h3>
+      <ul>
+        <li>
+          The JSONL stream emits lifecycle + completed items
+          (<code>thread.started</code>, <code>turn.started</code>,
+          <code>item.completed</code>, <code>turn.completed</code>), not per-token deltas.
+        </li>
+        <li>
+          The assistant answer arrives as one
+          <code>item.completed</code> with <code>item.type: "agent_message"</code>
+          (full text). Fake-stream that blob word-by-word if clients need a typing effect.
+        </li>
+        <li>
+          HTTP SSE can still be “real” (line-by-line as events arrive). The gap is the CLI
+          protocol, not the gateway transport.
+        </li>
+      </ul>
+
+      <h3>Reasoning effort ≠ reasoning on the wire</h3>
+      <ul>
+        <li>
+          <code>model_reasoning_effort</code> only controls how hard the model thinks.
+          By default, <strong>reasoning summaries are off</strong>
+          (<code>model_reasoning_summary = none</code>).
+        </li>
+        <li>
+          To get <code>item.type: "reasoning"</code> on JSONL, pass explicitly:
+          <code>-c model_reasoning_summary=detailed</code>,
+          <code>-c model_supports_reasoning_summaries=true</code>,
+          <code>-c hide_agent_reasoning=false</code>.
+        </li>
+        <li>
+          Trivial prompts may still skip a reasoning item; harder prompts +
+          <code>detailed</code> is what surfaces summaries.
+        </li>
+        <li>
+          Summary text is a short block (sometimes with empty <code>&lt;!-- --&gt;</code>
+          markers) — treat it like content: fake-stream word-by-word into a reasoning channel
+          (<code>delta.reasoning</code> / OpenRouter-style).
+        </li>
+      </ul>
+
+      <h3>Don’t confuse status with reasoning</h3>
+      <ul>
+        <li>
+          Heartbeats (“waiting for Codex…”), stderr (MCP auth failures, stdin notices),
+          and lifecycle crumbs are useful for ops — but dumping all of them into the
+          reasoning panel looks like “thinking” and can spam thousands of chars.
+        </li>
+        <li>
+          Prefer: real <code>reasoning</code> items → fake-streamed reasoning channel;
+          short activity crumbs optional; never mirror idle heartbeats 1:1 into UI reasoning.
+        </li>
+      </ul>
+
+      <h3>Process / stdin gotchas</h3>
+      <ul>
+        <li>
+          Codex hangs with <code>Reading additional input from stdin...</code> if stdin
+          stays open. Always close stdin (<code>DEVNULL</code> / end the pipe) for
+          non-interactive <code>exec</code>.
+        </li>
+        <li>
+          Buffer-until-exit kills time-to-first-token. Stream stdout line-by-line
+          (JSONL) even when you still fake-chunk the final message.
+        </li>
+        <li>
+          Abort must kill the child (SIGTERM → SIGKILL). Client disconnect should not
+          leave orphaned <code>codex</code> processes.
+        </li>
+      </ul>
+
+      <h3>Protocol / client compatibility</h3>
+      <ul>
+        <li>
+          OpenRouter-shaped clients expect reasoning on <code>delta.reasoning</code>
+          (sometimes also <code>reasoning_content</code>). Emit both when bridging.
+        </li>
+        <li>
+          Non-stream collectors should keep <strong>content only</strong> — don’t fold
+          reasoning crumbs into the final assistant message.
+        </li>
+        <li>
+          Benchmark UIs that talk to Codex <em>directly</em> won’t see cli2api SSE
+          improvements until they use the gateway or mirror the same JSONL → channel mapping.
+        </li>
+      </ul>
+
+      <h3>Adapter checklist (next CLI)</h3>
+      <ol>
+        <li>What does the CLI actually emit under “JSON/stream” mode? Capture a sample.</li>
+        <li>Is there a separate flag for summaries / traces vs effort / temperature?</li>
+        <li>Map: lifecycle → optional status; model thought → reasoning; final answer → content.</li>
+        <li>If blobs not tokens: fake-stream words; document honesty in the capability matrix.</li>
+        <li>Close stdin; stream lines; kill on abort; scrub env (still P1).</li>
+      </ol>
+
+      <div class="callout">
+        <div class="label">For the next implementation</div>
+        <p>
+          Before claiming “streaming” or “reasoning” for a new adapter, verify with a raw
+          CLI capture that the events exist, then wire flags that unlock them. Update this
+          section when you learn something non-obvious.
+        </p>
+      </div>
+    </section>
+
+    <footer>
+      Local CLI → AI API build plan · personal + open-source / localhost scope ·
+      open this file in a browser anytime from
+      <code>Documents/ideas/cli-to-ai-api-plan.html</code>
+    </footer>
+  </div>
+</body>
+</html>

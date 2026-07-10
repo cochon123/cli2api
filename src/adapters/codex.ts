@@ -56,11 +56,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/** Yield content word-by-word so SSE clients see a typing effect. */
+/** Yield text word-by-word so SSE clients see a typing effect. */
 export async function* fakeStreamWords(
   text: string,
   delayMs: number,
   signal?: AbortSignal,
+  channel: "content" | "reasoning" = "content",
 ): AsyncGenerator<ChatEvent> {
   const parts = text.match(/\S+\s*|\s+/g) ?? [text];
   for (const part of parts) {
@@ -69,7 +70,7 @@ export async function* fakeStreamWords(
       return;
     }
     if (!part) continue;
-    yield { type: "delta", text: part, channel: "content" };
+    yield { type: "delta", text: part, channel };
     if (delayMs > 0) {
       try {
         await sleep(delayMs, signal);
@@ -100,9 +101,12 @@ function agentMessageText(item: Record<string, unknown>): string | null {
 
 function reasoningText(item: Record<string, unknown>): string | null {
   if (itemTypeOf(item) !== "reasoning") return null;
-  if (typeof item.text === "string" && item.text) return item.text;
-  if (typeof item.content === "string" && item.content) return item.content;
-  return null;
+  let text = "";
+  if (typeof item.text === "string" && item.text) text = item.text;
+  else if (typeof item.content === "string" && item.content) text = item.content;
+  if (!text) return null;
+  // Codex sometimes appends empty HTML comment markers in summary text.
+  return text.replace(/<!--\s*-->/g, "").trim() || null;
 }
 
 /** Short human-readable breadcrumb for non-message Codex items (reasoning channel). */
@@ -157,6 +161,8 @@ export type CodexLineKind = "content" | "reasoning" | "done" | "error" | "ignore
 export interface CodexParsedLine {
   kind: CodexLineKind;
   text?: string;
+  /** True for model reasoning summaries (fake-stream); false for short status crumbs. */
+  fakeStream?: boolean;
   error?: ChatEvent & { type: "error" };
   done?: ChatEvent & { type: "done" };
 }
@@ -236,10 +242,11 @@ export function parseCodexLine(line: string): CodexParsedLine {
       }
       const reason = reasoningText(item);
       if (reason && (type === "item.completed" || type === "item.updated")) {
-        return { kind: "reasoning", text: reason.endsWith("\n") ? reason : `${reason}\n` };
+        const text = reason.endsWith("\n") ? reason : `${reason}\n`;
+        return { kind: "reasoning", text, fakeStream: true };
       }
       const crumb = activityBreadcrumb(type, item);
-      if (crumb) return { kind: "reasoning", text: crumb };
+      if (crumb) return { kind: "reasoning", text: crumb, fakeStream: false };
     }
     return { kind: "ignore" };
   }
@@ -309,6 +316,20 @@ function buildExecArgs(
 ): string[] {
   const args = ["exec", "--json", "-s", sandbox];
   if (skipGitRepoCheck) args.push("--skip-git-repo-check");
+  // Surface reasoning *summaries* on the JSONL stream (effort alone is not enough).
+  args.push(
+    "-c",
+    "model_reasoning_summary=detailed",
+    "-c",
+    "model_supports_reasoning_summaries=true",
+    "-c",
+    "hide_agent_reasoning=false",
+  );
+  // Optional effort override from OpenAI-shaped request body.
+  const rawEffort = req.raw?.reasoning_effort ?? req.raw?.reasoningEffort;
+  if (typeof rawEffort === "string" && rawEffort.trim() && rawEffort.trim() !== "none") {
+    args.push("-c", `model_reasoning_effort=${rawEffort.trim().toLowerCase()}`);
+  }
   if (opts.cwd) args.push("-C", opts.cwd);
   if (req.modelLocal && req.modelLocal !== "default") {
     args.push("-m", req.modelLocal);
@@ -374,11 +395,23 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
           if (pev.type === "stdout_line") {
             const parsed = parseCodexLine(pev.line);
             if (parsed.kind === "reasoning" && parsed.text) {
-              yield { type: "delta", text: parsed.text, channel: "reasoning" };
+              if (parsed.fakeStream) {
+                for await (const ev of fakeStreamWords(
+                  parsed.text,
+                  wordDelay,
+                  signal,
+                  "reasoning",
+                )) {
+                  yield ev;
+                  if (ev.type === "error") return;
+                }
+              } else {
+                yield { type: "delta", text: parsed.text, channel: "reasoning" };
+              }
             } else if (parsed.kind === "content" && parsed.text) {
               sawContent = true;
               // Fake-stream the whole agent message word-by-word.
-              for await (const ev of fakeStreamWords(parsed.text, wordDelay, signal)) {
+              for await (const ev of fakeStreamWords(parsed.text, wordDelay, signal, "content")) {
                 yield ev;
                 if (ev.type === "error") return;
               }

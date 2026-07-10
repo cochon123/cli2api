@@ -103,8 +103,10 @@ Model ids: `adapter/model` — e.g. `mock/echo`, `codex/default`, `codex/o3`.
 - [x] No open CORS (SDK/script clients only)
 - [ ] OpenCode / cursor-agent adapters
 - [x] Real JSONL streaming from Codex (`codex exec --json` line-by-line)
-  - Pre-answer events → `delta.reasoning` / `reasoning_content`
-  - Final `agent_message` → word-by-word fake-stream on `delta.content`
+  - Enable reasoning summaries via `-c model_reasoning_summary=detailed` (+ supports / unhide)
+  - Reasoning summary items → word-by-word `delta.reasoning` / `reasoning_content`
+  - Final `agent_message` → word-by-word `delta.content`
+  - Short lifecycle crumbs still go to reasoning without fake-stream delay
 - [ ] Tool calling / Responses API
 - [ ] Env scrubbing for spawned CLI processes (child still inherits parent env today)
 
