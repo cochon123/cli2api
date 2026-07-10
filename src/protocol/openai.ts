@@ -5,6 +5,8 @@ import type {
   ChatMessage,
   ContentPart,
   NormalizedChatRequest,
+  ChatTool,
+  ToolCall,
 } from "../types.js";
 
 export function messageContentToText(content: ChatMessage["content"]): string {
@@ -25,12 +27,49 @@ export function messagesToPrompt(messages: ChatMessage[]): string {
   const parts: string[] = [];
   for (const msg of messages) {
     const text = messageContentToText(msg.content).trim();
-    if (!text) continue;
+    const calls = Array.isArray(msg.tool_calls) && msg.tool_calls.length
+      ? JSON.stringify({ tool_calls: msg.tool_calls })
+      : "";
+    if (!text && !calls) continue;
     const role = (msg.role || "user").toUpperCase();
-    parts.push(`${role}:\n${text}`);
+    parts.push(`${role}:\n${text || calls}`);
   }
   parts.push("ASSISTANT:");
   return parts.join("\n\n");
+}
+
+function trailingMessages(messages: ChatMessage[]): ChatMessage[] {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "assistant") return messages.slice(index + 1);
+  }
+  return messages;
+}
+
+function toolInstructions(tools: ChatTool[], choice: NormalizedChatRequest["toolChoice"]): string {
+  if (!tools.length || choice === "none") return "";
+  const definitions = tools.map((tool) => tool.function);
+  const forced = typeof choice === "object" ? choice.function.name : undefined;
+  const requirement = forced
+    ? `You must call the function named ${forced}.`
+    : choice === "required"
+      ? "You must call one or more functions."
+      : "Call a function only when it is useful.";
+  return [
+    "AVAILABLE FUNCTIONS:",
+    JSON.stringify(definitions),
+    requirement,
+    "To call functions, return only valid JSON in this exact shape:",
+    '{"tool_calls":[{"name":"function_name","arguments":{}}]}',
+    "Do not wrap the JSON in markdown.",
+  ].join("\n");
+}
+
+/** Build the CLI prompt, avoiding replay of old turns when resuming a native session. */
+export function requestToPrompt(req: NormalizedChatRequest): string {
+  const messages = req.nativeSessionId ? trailingMessages(req.messages) : req.messages;
+  const prompt = messagesToPrompt(messages.length ? messages : req.messages);
+  const tools = toolInstructions(req.tools, req.toolChoice);
+  return tools ? `${prompt}\n\n${tools}` : prompt;
 }
 
 /** Extract just the last user message (useful for agent-mode CLIs). */
@@ -64,6 +103,14 @@ export function normalizeChatRequest(body: ChatCompletionRequest): NormalizedCha
   }
 
   const { modelLocal } = parseModelId(body.model);
+  const tools = Array.isArray(body.tools)
+    ? body.tools.filter((tool): tool is ChatTool =>
+        tool?.type === "function" &&
+        Boolean(tool.function) &&
+        typeof tool.function.name === "string" &&
+        tool.function.name.length > 0,
+      )
+    : [];
   return {
     model: body.model,
     modelLocal,
@@ -72,6 +119,9 @@ export function normalizeChatRequest(body: ChatCompletionRequest): NormalizedCha
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
     maxTokens: typeof body.max_tokens === "number" ? body.max_tokens : undefined,
     raw: body,
+    tools,
+    toolChoice: body.tool_choice,
+    sessionId: typeof body.session_id === "string" && body.session_id ? body.session_id : undefined,
   };
 }
 
@@ -83,8 +133,9 @@ export function buildCompletionResponse(opts: {
   id: string;
   model: string;
   content: string;
-  finishReason?: "stop" | "length" | "error";
+  finishReason?: "stop" | "length" | "tool_calls" | "error";
   usage?: ChatCompletionResponse["usage"];
+  toolCalls?: ToolCall[];
 }): ChatCompletionResponse {
   return {
     id: opts.id,
@@ -94,7 +145,11 @@ export function buildCompletionResponse(opts: {
     choices: [
       {
         index: 0,
-        message: { role: "assistant", content: opts.content },
+        message: {
+          role: "assistant",
+          content: opts.toolCalls?.length ? null : opts.content,
+          ...(opts.toolCalls?.length ? { tool_calls: opts.toolCalls } : {}),
+        },
         finish_reason: opts.finishReason ?? "stop",
       },
     ],
@@ -110,8 +165,14 @@ export function buildChunk(opts: {
     content?: string;
     reasoning?: string;
     reasoning_content?: string;
+    tool_calls?: Array<{
+      index: number;
+      id?: string;
+      type?: "function";
+      function?: { name?: string; arguments?: string };
+    }>;
   };
-  finishReason?: "stop" | "length" | "error" | null;
+  finishReason?: "stop" | "length" | "tool_calls" | "error" | null;
 }): ChatCompletionChunk {
   return {
     id: opts.id,

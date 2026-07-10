@@ -1017,9 +1017,10 @@ cli2api completion --model codex/default -p <span class="str">"ping"</span></cod
       <div class="callout">
         <div class="label">Suggested next move</div>
         <p>
-          Phase 0 is done and the adapter slice of P1 now includes Codex, OpenCode,
-          Cursor Agent, and Claude Code plus scrubbed child environments. Next: finish
-          P1 config/model aliases and concurrency hardening; keep §12 lessons updated.
+          Phase 0 is done and P1 now includes Codex, OpenCode, Cursor Agent, and
+          Claude Code, scrubbed child environments, JSON config/model aliases,
+          function-call shaping, a Responses API subset, and native session resume.
+          Next: concurrency hardening and the remaining P2–P3 polish.
         </p>
       </div>
 
@@ -1057,6 +1058,20 @@ cli2api completion --model codex/default -p <span class="str">"ping"</span></cod
           HTTP SSE can still be “real” (line-by-line as events arrive). The gap is the CLI
           protocol, not the gateway transport.
         </li>
+      </ul>
+
+      <h3>Session fidelity belongs at the adapter boundary</h3>
+      <ul>
+        <li>Each CLI uses a different resume flag and emits its native session id in a different JSON event.</li>
+        <li>Keep API response ids separate from native ids, map them in memory, and bind every mapping to its adapter.</li>
+        <li>When a native transcript is resumed, send only the new tail after the last assistant turn; replaying the full history duplicates context.</li>
+      </ul>
+
+      <h3>Tool compatibility needs an explicit fallback contract</h3>
+      <ul>
+        <li>The CLIs do not share a callable tool-event protocol, so function schemas are supplied in the prompt using a strict JSON envelope.</li>
+        <li>Buffer only assistant content for tool-capable turns; keep reasoning and session events live, then validate names and JSON arguments before emitting API tool calls.</li>
+        <li>Responses streaming is semantic: emit lifecycle, output-text, and function-argument event types rather than wrapping Chat Completions chunks.</li>
       </ul>
 
       <h3>Reasoning effort ≠ reasoning on the wire</h3>

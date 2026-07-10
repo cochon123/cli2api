@@ -6,7 +6,7 @@ import type {
   ModelInfo,
   NormalizedChatRequest,
 } from "../types.js";
-import { messagesToPrompt } from "../protocol/openai.js";
+import { requestToPrompt } from "../protocol/openai.js";
 import { runCommand, runCommandLines, which } from "../util/process.js";
 
 const DEFAULT_MODELS = [
@@ -160,13 +160,14 @@ function activityBreadcrumb(
   return null;
 }
 
-export type CodexLineKind = "content" | "reasoning" | "done" | "error" | "ignore";
+export type CodexLineKind = "content" | "reasoning" | "session" | "done" | "error" | "ignore";
 
 export interface CodexParsedLine {
   kind: CodexLineKind;
   text?: string;
   /** True for model reasoning summaries (fake-stream); false for short status crumbs. */
   fakeStream?: boolean;
+  sessionId?: string;
   error?: ChatEvent & { type: "error" };
   done?: ChatEvent & { type: "done" };
 }
@@ -233,7 +234,12 @@ export function parseCodexLine(line: string): CodexParsedLine {
     rec.item && typeof rec.item === "object" ? (rec.item as Record<string, unknown>) : null;
 
   // Lifecycle breadcrumbs
-  if (type === "thread.started" || type === "turn.started") {
+  if (type === "thread.started") {
+    return typeof rec.thread_id === "string" && rec.thread_id
+      ? { kind: "session", sessionId: rec.thread_id }
+      : { kind: "ignore" };
+  }
+  if (type === "turn.started") {
     const crumb = activityBreadcrumb(type, null);
     return crumb ? { kind: "reasoning", text: crumb } : { kind: "ignore" };
   }
@@ -280,6 +286,7 @@ export function chatEventsFromCodexLine(line: string): ChatEvent[] {
     return [{ type: "delta", text: parsed.text, channel: "reasoning" }];
   }
   if (parsed.kind === "done" && parsed.done) return [parsed.done];
+  if (parsed.kind === "session" && parsed.sessionId) return [{ type: "session", id: parsed.sessionId }];
   if (parsed.kind === "error" && parsed.error) return [parsed.error];
   return [];
 }
@@ -318,8 +325,11 @@ function buildExecArgs(
   skipGitRepoCheck: boolean,
   prompt: string,
 ): string[] {
-  const args = ["exec", "--json", "-s", sandbox];
+  const args = req.nativeSessionId
+    ? ["exec", "resume", "--json"]
+    : ["exec", "--json", "-s", sandbox];
   if (skipGitRepoCheck) args.push("--skip-git-repo-check");
+  if (req.nativeSessionId) args.push("-c", `sandbox_mode=\"${sandbox}\"`);
   // Surface reasoning *summaries* on the JSONL stream (effort alone is not enough).
   args.push(
     "-c",
@@ -339,6 +349,7 @@ function buildExecArgs(
     args.push("-m", req.modelLocal);
   }
   if (opts.extraArgs?.length) args.push(...opts.extraArgs);
+  if (req.nativeSessionId) args.push(req.nativeSessionId);
   args.push(prompt);
   return args;
 }
@@ -376,7 +387,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
         return;
       }
 
-      const prompt = messagesToPrompt(req.messages);
+      const prompt = requestToPrompt(req);
       const args = buildExecArgs(opts, req, sandbox, skipGitRepoCheck, prompt);
       // Fake-stream delays are only for SSE typing effect — skip for non-stream collectors.
       const effectiveWordDelay = req.stream ? wordDelay : 0;
@@ -401,7 +412,9 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
 
           if (pev.type === "stdout_line") {
             const parsed = parseCodexLine(pev.line);
-            if (parsed.kind === "reasoning" && parsed.text) {
+            if (parsed.kind === "session" && parsed.sessionId) {
+              yield { type: "session", id: parsed.sessionId };
+            } else if (parsed.kind === "reasoning" && parsed.text) {
               if (parsed.fakeStream) {
                 for await (const ev of fakeStreamWords(
                   parsed.text,

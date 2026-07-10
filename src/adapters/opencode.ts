@@ -7,7 +7,7 @@ import type {
   ModelInfo,
   NormalizedChatRequest,
 } from "../types.js";
-import { messagesToPrompt } from "../protocol/openai.js";
+import { requestToPrompt } from "../protocol/openai.js";
 import { runCommand, runCommandLines, which } from "../util/process.js";
 import { fakeStreamWords } from "./codex.js";
 
@@ -32,6 +32,15 @@ export type OpenCodeParsedLine =
 
 function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+export function openCodeSessionId(line: string): string | undefined {
+  try {
+    const event = record(JSON.parse(line));
+    return event && typeof event.sessionID === "string" && event.sessionID ? event.sessionID : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function parseOpenCodeLine(line: string): OpenCodeParsedLine {
@@ -121,10 +130,11 @@ export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapte
       }
 
       const args = ["run", "--pure", "--format", "json", "--thinking", "--agent", agent];
+      if (req.nativeSessionId) args.push("--session", req.nativeSessionId);
       const model = localModel(req.modelLocal);
       if (model) args.push("--model", model);
       if (opts.extraArgs?.length) args.push(...opts.extraArgs);
-      args.push(messagesToPrompt(req.messages));
+      args.push(requestToPrompt(req));
 
       let sawContent = false;
       let exitCode: number | null = null;
@@ -132,6 +142,7 @@ export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapte
       let stderr = "";
       let finishReason: "stop" | "length" | "error" = "stop";
       let usage: ChatCompletionResponse["usage"];
+      let emittedSessionId: string | undefined;
       const delay = req.stream ? wordDelay : 0;
 
       try {
@@ -142,6 +153,11 @@ export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapte
           inheritEnv: ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT"],
         })) {
           if (event.type === "stdout_line") {
+            const sessionId = openCodeSessionId(event.line);
+            if (sessionId && sessionId !== emittedSessionId) {
+              emittedSessionId = sessionId;
+              yield { type: "session", id: sessionId };
+            }
             const parsed = parseOpenCodeLine(event.line);
             if (parsed.kind === "content" || parsed.kind === "reasoning") {
               if (parsed.kind === "content") sawContent = true;

@@ -27,6 +27,20 @@ const MODELS: ModelInfo[] = [
 
 async function* echoChat(req: NormalizedChatRequest): AsyncGenerator<ChatEvent> {
   const last = lastUserMessage(req.messages) || messagesToPrompt(req.messages);
+  if (req.tools.length && req.toolChoice !== "none") {
+    const forced = typeof req.toolChoice === "object" ? req.toolChoice.function.name : undefined;
+    const tool = req.tools.find((item) => item.function.name === forced) ?? req.tools[0];
+    yield {
+      type: "tool_call",
+      call: {
+        id: "call_mock0000000000000000000",
+        type: "function",
+        function: { name: tool.function.name, arguments: JSON.stringify({ input: last }) },
+      },
+    };
+    yield { type: "done", finishReason: "tool_calls" };
+    return;
+  }
   const reply = `[mock/echo] ${last}`;
   // Fake-stream in small chunks so clients exercise SSE path
   const chunkSize = 24;
@@ -67,6 +81,7 @@ export function createMockAdapter(): Adapter {
         yield { type: "error", message: "Aborted", code: "abort" };
         return;
       }
+      yield { type: "session", id: req.nativeSessionId ?? "mock_native_session" };
       if (req.modelLocal === "slow" || req.model === "mock/slow") {
         yield* slowChat(req);
         return;

@@ -7,7 +7,7 @@ import type {
   ModelInfo,
   NormalizedChatRequest,
 } from "../types.js";
-import { messagesToPrompt } from "../protocol/openai.js";
+import { requestToPrompt } from "../protocol/openai.js";
 import { runCommand, runCommandLines, which } from "../util/process.js";
 
 const DEFAULT_MODELS = ["default", "sonnet", "opus", "haiku"];
@@ -21,6 +21,7 @@ export interface ClaudeAdapterOptions {
 
 export type ClaudeParsedLine =
   | { kind: "content" | "reasoning"; text: string; partial: boolean }
+  | { kind: "session"; id: string }
   | { kind: "result"; text?: string; usage?: ChatCompletionResponse["usage"] }
   | { kind: "error"; message: string }
   | { kind: "ignore" };
@@ -56,6 +57,10 @@ export function parseClaudeLine(line: string): ClaudeParsedLine[] {
   const message = record(parsed);
   if (!message) return [{ kind: "ignore" }];
   const type = typeof message.type === "string" ? message.type : "";
+
+  if (type === "system" && message.subtype === "init" && typeof message.session_id === "string") {
+    return [{ kind: "session", id: message.session_id }];
+  }
 
   if (type === "stream_event") {
     const event = record(message.event);
@@ -148,9 +153,10 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
         "mcp__*",
         "--strict-mcp-config",
       ];
+      if (req.nativeSessionId) args.push("--resume", req.nativeSessionId);
       if (req.modelLocal && req.modelLocal !== "default") args.push("--model", req.modelLocal);
       if (opts.extraArgs?.length) args.push(...opts.extraArgs);
-      args.push(messagesToPrompt(req.messages));
+      args.push(requestToPrompt(req));
 
       let sawContent = false;
       let sawPartialContent = false;
@@ -192,6 +198,8 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
                 } else if (!sawPartialReasoning) {
                   yield { type: "delta", text: parsed.text, channel: "reasoning" };
                 }
+              } else if (parsed.kind === "session") {
+                yield { type: "session", id: parsed.id };
               } else if (parsed.kind === "result") {
                 fallbackResult = parsed.text ?? fallbackResult;
                 usage = parsed.usage ?? usage;

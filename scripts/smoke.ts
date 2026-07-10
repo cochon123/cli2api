@@ -74,6 +74,50 @@ async function main() {
     assert(raw.includes("[DONE]"), "sse done");
     assert(raw.includes("stream-me"), "streamed echo");
 
+    // Chat Completions function calling
+    const toolCompletion = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "mock/echo",
+        messages: [{ role: "user", content: "weather in Edmonton" }],
+        tools: [{ type: "function", function: { name: "get_weather", parameters: { type: "object" } } }],
+        tool_choice: "required",
+      }),
+    }).then((r) => r.json());
+    assert(toolCompletion.choices?.[0]?.finish_reason === "tool_calls", "tool finish reason");
+    assert(toolCompletion.choices?.[0]?.message?.tool_calls?.[0]?.function?.name === "get_weather", "chat tool call");
+
+    // Responses API non-stream + previous_response_id session chain
+    const response = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model: "mock/echo", input: "responses-ping" }),
+    }).then((r) => r.json());
+    assert(response.object === "response" && response.status === "completed", "response object");
+    assert(response.output?.[0]?.content?.[0]?.text?.includes("responses-ping"), "response text");
+
+    const resumed = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model: "mock/echo", input: "second-turn", previous_response_id: response.id }),
+    }).then((r) => r.json());
+    assert(resumed.id !== response.id && resumed.status === "completed", "response session chain");
+
+    // Responses semantic SSE events and function call events
+    const responseStream = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "mock/echo", stream: true, input: "call tool",
+        tools: [{ type: "function", name: "lookup", parameters: { type: "object" } }],
+        tool_choice: "required",
+      }),
+    }).then((r) => r.text());
+    assert(responseStream.includes("response.created"), "response.created event");
+    assert(responseStream.includes("response.function_call_arguments.done"), "function arguments event");
+    assert(responseStream.includes("response.completed"), "response.completed event");
+
     console.log("smoke ok");
     console.log(`  non-stream: ${content.slice(0, 80)}`);
     console.log(`  stream bytes: ${raw.length}`);

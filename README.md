@@ -101,16 +101,47 @@ After `npm run build`, the bin is `cli2api`.
 | `CLI2API_CLAUDE_BIN` | Path/name of Claude Code binary |
 | `CLI2API_CWD` | Working directory for CLI adapters |
 | `CLI2API_CHILD_ENV_ALLOWLIST` | Comma-separated extra parent env names to explicitly pass to child CLIs |
+| `CLI2API_CONFIG` | Explicit JSON config path |
+
+## Config and model aliases
+
+JSON config is merged in this order: `$XDG_CONFIG_HOME/cli2api/config.json`, project `.cli2api.json`, then `--config <path>` / `CLI2API_CONFIG`. Later values win; `modelAliases` and `binaries` merge by key.
+
+```json
+{
+  "defaultAdapter": "opencode",
+  "port": 3927,
+  "token": "local-secret",
+  "cwd": "/path/to/project",
+  "modelAliases": {
+    "fast": "opencode/deepseek-v4-flash-free",
+    "composer": "cursor/composer-2.5-fast"
+  },
+  "binaries": {
+    "codex": "codex",
+    "opencode": "opencode",
+    "cursor": "cursor-agent",
+    "claude": "claude"
+  }
+}
+```
+
+Aliases appear in `/v1/models` and work anywhere a model id is accepted.
 
 ## API (subset)
 
 - `GET /health`
 - `GET /v1/models`
 - `POST /v1/chat/completions` — non-stream + `stream: true` (SSE)
+- `POST /v1/responses` — text/function input, non-stream + semantic SSE events
 
 All endpoints require `Authorization: Bearer <token>`.
 
 Model ids: `adapter/model` — e.g. `mock/echo`, `codex/default`, `opencode/deepseek-v4-flash-free`, `cursor/composer-2.5-fast`, `claude/sonnet`. OpenCode provider-qualified models keep the second slash, for example `opencode/openrouter/deepseek/deepseek-v4-flash`.
+
+Function tools are accepted in both OpenAI API shapes. Because these coding CLIs do not expose a uniform native tool protocol, cli2api supplies the function schemas in the prompt and validates a strict JSON call envelope; it returns standard `tool_calls` / `function_call` output. The mock adapter has native deterministic tool events for tests.
+
+For Chat Completions, reuse a client-chosen `session_id` to resume the CLI's native conversation. For Responses, pass the prior returned `id` as `previous_response_id`. Mappings are adapter-bound, in memory, limited to 1,000 entries, and expire after 24 hours; restarting cli2api clears them. On native resume, only messages after the last assistant turn are sent, avoiding duplicate history.
 
 ## Phase 0 scope
 
@@ -128,7 +159,10 @@ Model ids: `adapter/model` — e.g. `mock/echo`, `codex/default`, `opencode/deep
   - Reasoning summary items → word-by-word `delta.reasoning` / `reasoning_content`
   - Final `agent_message` → word-by-word `delta.content`
   - Short lifecycle crumbs still go to reasoning without fake-stream delay
-- [ ] Tool calling / Responses API
+- [x] Config files + model aliases
+- [x] Function tool calling (validated prompt-envelope fallback)
+- [x] Responses API subset + semantic streaming events
+- [x] Native CLI session resume (`session_id` / `previous_response_id`)
 - [x] Env scrubbing for spawned CLI processes with a small runtime allowlist, per-adapter auth vars, and explicit opt-in passthrough
 
 ## Project layout

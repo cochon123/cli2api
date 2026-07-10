@@ -7,7 +7,7 @@ import type {
   ModelInfo,
   NormalizedChatRequest,
 } from "../types.js";
-import { messagesToPrompt } from "../protocol/openai.js";
+import { requestToPrompt } from "../protocol/openai.js";
 import { runCommand, runCommandLines, which } from "../util/process.js";
 
 const DEFAULT_MODELS = ["default", "composer-2.5", "composer-2.5-fast"];
@@ -25,6 +25,7 @@ export interface CursorAdapterOptions {
 
 export type CursorParsedLine =
   | { kind: "content" | "reasoning"; text: string; partial: boolean }
+  | { kind: "session"; id: string }
   | { kind: "result"; text?: string; usage?: ChatCompletionResponse["usage"] }
   | { kind: "error"; message: string }
   | { kind: "ignore" };
@@ -56,6 +57,10 @@ export function parseCursorLine(line: string): CursorParsedLine {
   const event = record(parsed);
   if (!event) return { kind: "ignore" };
   const type = typeof event.type === "string" ? event.type : "";
+
+  if (type === "system" && event.subtype === "init" && typeof event.session_id === "string") {
+    return { kind: "session", id: event.session_id };
+  }
 
   if (type === "thinking" && event.subtype === "delta" && typeof event.text === "string") {
     return { kind: "reasoning", text: event.text, partial: true };
@@ -130,9 +135,10 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
         "enabled",
       ];
       if (trust) args.push("--trust");
+      if (req.nativeSessionId) args.push("--resume", req.nativeSessionId);
       if (req.modelLocal && req.modelLocal !== "default") args.push("--model", req.modelLocal);
       if (opts.extraArgs?.length) args.push(...opts.extraArgs);
-      args.push(messagesToPrompt(req.messages));
+      args.push(requestToPrompt(req));
 
       let sawContent = false;
       let sawPartialContent = false;
@@ -151,7 +157,9 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
         })) {
           if (event.type === "stdout_line") {
             const parsed = parseCursorLine(event.line);
-            if (parsed.kind === "reasoning") {
+            if (parsed.kind === "session") {
+              yield { type: "session", id: parsed.id };
+            } else if (parsed.kind === "reasoning") {
               yield { type: "delta", text: parsed.text, channel: "reasoning" };
             } else if (parsed.kind === "content") {
               // Cursor emits partial deltas, then repeats the full answer without a timestamp.
