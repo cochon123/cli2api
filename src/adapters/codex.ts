@@ -374,6 +374,8 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
 
       const prompt = messagesToPrompt(req.messages);
       const args = buildExecArgs(opts, req, sandbox, skipGitRepoCheck, prompt);
+      // Fake-stream delays are only for SSE typing effect — skip for non-stream collectors.
+      const effectiveWordDelay = req.stream ? wordDelay : 0;
 
       let sawContent = false;
       let sawDone = false;
@@ -398,7 +400,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
               if (parsed.fakeStream) {
                 for await (const ev of fakeStreamWords(
                   parsed.text,
-                  wordDelay,
+                  effectiveWordDelay,
                   signal,
                   "reasoning",
                 )) {
@@ -411,7 +413,12 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
             } else if (parsed.kind === "content" && parsed.text) {
               sawContent = true;
               // Fake-stream the whole agent message word-by-word.
-              for await (const ev of fakeStreamWords(parsed.text, wordDelay, signal, "content")) {
+              for await (const ev of fakeStreamWords(
+                parsed.text,
+                effectiveWordDelay,
+                signal,
+                "content",
+              )) {
                 yield ev;
                 if (ev.type === "error") return;
               }
