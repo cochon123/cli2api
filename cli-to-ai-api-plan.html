@@ -1070,7 +1070,7 @@ cli2api completion --model codex/default -p <span class="str">"ping"</span></cod
       <h3>Tool compatibility needs an explicit fallback contract</h3>
       <ul>
         <li>The CLIs do not share a callable tool-event protocol, so function schemas are supplied in the prompt using a strict JSON envelope.</li>
-        <li>Buffer only assistant content for tool-capable turns; keep reasoning and session events live, then validate names and JSON arguments before emitting API tool calls.</li>
+        <li>Buffer only assistant content for tool-capable turns; keep reasoning and session events live, then validate names, JSON argument objects, and strict JSON Schemas before emitting API tool calls.</li>
         <li>Responses streaming is semantic: emit lifecycle, output-text, and function-argument event types rather than wrapping Chat Completions chunks.</li>
       </ul>
 

@@ -262,6 +262,15 @@ export function createApp(opts: ServerOptions): Hono {
 
     const id = responseId();
     const inheritedSession = sessions.get(body.previous_response_id, adapter.id);
+    if (body.previous_response_id && !inheritedSession) {
+      return c.json({
+        error: {
+          message: `Unknown, expired, or adapter-mismatched previous_response_id: ${body.previous_response_id}`,
+          type: "invalid_request_error",
+          param: "previous_response_id",
+        },
+      }, 400);
+    }
     req = { ...req, nativeSessionId: inheritedSession };
     if (inheritedSession) sessions.set(id, adapter.id, inheritedSession);
     const ac = new AbortController();
@@ -269,9 +278,17 @@ export function createApp(opts: ServerOptions): Hono {
 
     if (req.stream) {
       return streamSSE(c, async (stream) => {
+        let sequenceNumber = 0;
+        const writeEvent = async (type: string, payload: Record<string, unknown>) => {
+          await stream.writeSSE({
+            event: type,
+            data: JSON.stringify({ type, sequence_number: sequenceNumber++, ...payload }),
+          });
+        };
         const created = buildResponse({ id, model: requestedModel, status: "in_progress" });
         created.output = [];
-        await stream.writeSSE({ event: "response.created", data: JSON.stringify({ type: "response.created", response: created }) });
+        await writeEvent("response.created", { response: created });
+        await writeEvent("response.in_progress", { response: created });
         let text = "";
         let reasoning = "";
         const calls = [] as import("../types.js").ToolCall[];
@@ -291,29 +308,31 @@ export function createApp(opts: ServerOptions): Hono {
               if (!messageAdded) {
                 messageAdded = true;
                 messageOutputIndex = nextOutputIndex++;
-                await stream.writeSSE({ event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", response_id: id, output_index: messageOutputIndex, item: { ...messageOutput(msgId, ""), status: "in_progress" } }) });
+                await writeEvent("response.output_item.added", { response_id: id, output_index: messageOutputIndex, item: { ...messageOutput(msgId, ""), status: "in_progress", content: [] } });
+                await writeEvent("response.content_part.added", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
               }
               text += ev.text;
-              await stream.writeSSE({ event: "response.output_text.delta", data: JSON.stringify({ type: "response.output_text.delta", response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, delta: ev.text }) });
+              await writeEvent("response.output_text.delta", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, delta: ev.text });
             } else if (ev.type === "delta") {
               if (reasoningOutputIndex < 0) {
                 reasoningOutputIndex = nextOutputIndex++;
-                await stream.writeSSE({ event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", response_id: id, output_index: reasoningOutputIndex, item: { id: reasoningId, type: "reasoning", status: "in_progress", summary: [] } }) });
+                await writeEvent("response.output_item.added", { response_id: id, output_index: reasoningOutputIndex, item: { id: reasoningId, type: "reasoning", status: "in_progress", summary: [] } });
+                await writeEvent("response.reasoning_summary_part.added", { response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, part: { type: "summary_text", text: "" } });
               }
               reasoning += ev.text;
-              await stream.writeSSE({ event: "response.reasoning_summary_text.delta", data: JSON.stringify({ type: "response.reasoning_summary_text.delta", response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, delta: ev.text }) });
+              await writeEvent("response.reasoning_summary_text.delta", { response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, delta: ev.text });
             } else if (ev.type === "tool_call") {
               const outputIndex = nextOutputIndex++;
               calls.push(ev.call);
               const item = functionOutput(ev.call);
               outputItems[outputIndex] = item;
-              await stream.writeSSE({ event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", response_id: id, output_index: outputIndex, item: { ...item, status: "in_progress", arguments: "" } }) });
-              await stream.writeSSE({ event: "response.function_call_arguments.delta", data: JSON.stringify({ type: "response.function_call_arguments.delta", response_id: id, item_id: item.id, output_index: outputIndex, delta: ev.call.function.arguments }) });
-              await stream.writeSSE({ event: "response.function_call_arguments.done", data: JSON.stringify({ type: "response.function_call_arguments.done", response_id: id, item_id: item.id, output_index: outputIndex, arguments: ev.call.function.arguments }) });
-              await stream.writeSSE({ event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", response_id: id, output_index: outputIndex, item }) });
+              await writeEvent("response.output_item.added", { response_id: id, output_index: outputIndex, item: { ...item, status: "in_progress", arguments: "" } });
+              await writeEvent("response.function_call_arguments.delta", { response_id: id, item_id: item.id, output_index: outputIndex, delta: ev.call.function.arguments });
+              await writeEvent("response.function_call_arguments.done", { response_id: id, item_id: item.id, output_index: outputIndex, arguments: ev.call.function.arguments });
+              await writeEvent("response.output_item.done", { response_id: id, output_index: outputIndex, item });
             } else if (ev.type === "error") {
               const failed = buildResponse({ id, model: requestedModel, status: "failed", error: { message: ev.message, code: ev.code } });
-              await stream.writeSSE({ event: "response.failed", data: JSON.stringify({ type: "response.failed", response: failed }) });
+              await writeEvent("response.failed", { response: failed });
               return;
             } else if (ev.type === "done") {
               usage = ev.usage;
@@ -322,25 +341,28 @@ export function createApp(opts: ServerOptions): Hono {
           if (reasoningOutputIndex >= 0) {
             const item = { id: reasoningId, type: "reasoning", status: "completed", summary: [{ type: "summary_text", text: reasoning }] };
             outputItems[reasoningOutputIndex] = item;
-            await stream.writeSSE({ event: "response.reasoning_summary_text.done", data: JSON.stringify({ type: "response.reasoning_summary_text.done", response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, text: reasoning }) });
-            await stream.writeSSE({ event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", response_id: id, output_index: reasoningOutputIndex, item }) });
+            await writeEvent("response.reasoning_summary_text.done", { response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, text: reasoning });
+            await writeEvent("response.reasoning_summary_part.done", { response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, part: { type: "summary_text", text: reasoning } });
+            await writeEvent("response.output_item.done", { response_id: id, output_index: reasoningOutputIndex, item });
           }
           if (!calls.length) {
             if (!messageAdded) {
               messageOutputIndex = nextOutputIndex++;
-              await stream.writeSSE({ event: "response.output_item.added", data: JSON.stringify({ type: "response.output_item.added", response_id: id, output_index: messageOutputIndex, item: { ...messageOutput(msgId, ""), status: "in_progress" } }) });
+              await writeEvent("response.output_item.added", { response_id: id, output_index: messageOutputIndex, item: { ...messageOutput(msgId, ""), status: "in_progress", content: [] } });
+              await writeEvent("response.content_part.added", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
             }
             const item = messageOutput(msgId, text);
             outputItems[messageOutputIndex] = item;
-            await stream.writeSSE({ event: "response.output_text.done", data: JSON.stringify({ type: "response.output_text.done", response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, text }) });
-            await stream.writeSSE({ event: "response.output_item.done", data: JSON.stringify({ type: "response.output_item.done", response_id: id, output_index: messageOutputIndex, item }) });
+            await writeEvent("response.output_text.done", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, text });
+            await writeEvent("response.content_part.done", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, part: { type: "output_text", text, annotations: [] } });
+            await writeEvent("response.output_item.done", { response_id: id, output_index: messageOutputIndex, item });
           }
           const response = buildResponse({ id, model: requestedModel, text, reasoning, toolCalls: calls, usage });
           response.output = outputItems;
-          await stream.writeSSE({ event: "response.completed", data: JSON.stringify({ type: "response.completed", response }) });
+          await writeEvent("response.completed", { response });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          await stream.writeSSE({ event: "error", data: JSON.stringify({ type: "error", message }) });
+          await writeEvent("error", { message });
         }
       });
     }

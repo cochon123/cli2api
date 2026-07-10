@@ -8,6 +8,9 @@ import type {
   ChatTool,
   ToolCall,
 } from "../types.js";
+import { Ajv } from "ajv";
+
+const schemaCompiler = new Ajv({ strict: false });
 
 export function messageContentToText(content: ChatMessage["content"]): string {
   if (content == null) return "";
@@ -92,25 +95,79 @@ export function parseModelId(model: string): { adapter?: string; modelLocal: str
 }
 
 export function normalizeChatRequest(body: ChatCompletionRequest): NormalizedChatRequest {
+  const invalid = (message: string): never => {
+    throw Object.assign(new Error(message), { status: 400 });
+  };
   if (!body || typeof body !== "object") {
-    throw Object.assign(new Error("Request body must be a JSON object"), { status: 400 });
+    invalid("Request body must be a JSON object");
   }
   if (!body.model || typeof body.model !== "string") {
-    throw Object.assign(new Error("`model` is required"), { status: 400 });
+    invalid("`model` is required");
   }
   if (!Array.isArray(body.messages) || body.messages.length === 0) {
-    throw Object.assign(new Error("`messages` must be a non-empty array"), { status: 400 });
+    invalid("`messages` must be a non-empty array");
+  }
+  const validRoles = new Set(["system", "developer", "user", "assistant", "tool"]);
+  for (let index = 0; index < body.messages.length; index += 1) {
+    const rawMessage = body.messages[index] as unknown;
+    if (!rawMessage || typeof rawMessage !== "object") invalid(`messages[${index}] must be an object`);
+    const message = rawMessage as ChatMessage;
+    if (!validRoles.has(message.role)) {
+      invalid(`messages[${index}] must have a supported role`);
+    }
+    if (message.content !== null && typeof message.content !== "string" && !Array.isArray(message.content)) {
+      invalid(`messages[${index}].content must be a string, array, or null`);
+    }
+    if (Array.isArray(message.content) && message.content.some((part) => !part || typeof part !== "object" || typeof part.type !== "string")) {
+      invalid(`messages[${index}].content contains an invalid content part`);
+    }
+    if (message.role === "tool" && (!message.tool_call_id || typeof message.tool_call_id !== "string")) {
+      invalid(`messages[${index}].tool_call_id is required for tool messages`);
+    }
+  }
+  if (body.stream !== undefined && typeof body.stream !== "boolean") invalid("`stream` must be a boolean");
+  if (body.temperature !== undefined && (!Number.isFinite(body.temperature) || body.temperature < 0 || body.temperature > 2)) {
+    invalid("`temperature` must be between 0 and 2");
+  }
+  if (body.max_tokens !== undefined && (!Number.isInteger(body.max_tokens) || body.max_tokens < 1)) {
+    invalid("`max_tokens` must be a positive integer");
+  }
+  if (body.tools !== undefined && !Array.isArray(body.tools)) invalid("`tools` must be an array");
+  const tools = body.tools ?? [];
+  for (let index = 0; index < tools.length; index += 1) {
+    const rawTool = tools[index] as unknown;
+    if (!rawTool || typeof rawTool !== "object") invalid(`tools[${index}] must be an object`);
+    const tool = rawTool as ChatTool;
+    if (tool.type !== "function" || !tool.function || typeof tool.function !== "object") {
+      invalid(`tools[${index}] must be a function tool`);
+    }
+    if (typeof tool.function.name !== "string" || !tool.function.name.trim()) invalid(`tools[${index}].function.name is required`);
+    if (tool.function.parameters !== undefined && (!tool.function.parameters || typeof tool.function.parameters !== "object" || Array.isArray(tool.function.parameters))) {
+      invalid(`tools[${index}].function.parameters must be a JSON Schema object`);
+    }
+    if (tool.function.strict !== undefined && typeof tool.function.strict !== "boolean") invalid(`tools[${index}].function.strict must be a boolean`);
+    if (tool.function.strict) {
+      try {
+        schemaCompiler.compile(tool.function.parameters ?? { type: "object" });
+      } catch (error) {
+        invalid(`tools[${index}].function.parameters is not a valid JSON Schema: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+  const choice = body.tool_choice;
+  if (choice !== undefined && choice !== "none" && choice !== "auto" && choice !== "required") {
+    if (!choice || typeof choice !== "object" || choice.type !== "function" || !choice.function || typeof choice.function.name !== "string" || !choice.function.name) {
+      invalid("`tool_choice` must be none, auto, required, or a named function choice");
+    }
+    if (!tools.some((tool) => tool.function.name === choice.function.name)) {
+      invalid(`tool_choice references undeclared function: ${choice.function.name}`);
+    }
+  }
+  if ((choice === "required" || (typeof choice === "object" && choice)) && tools.length === 0) {
+    invalid("`tool_choice` requires at least one valid function tool");
   }
 
   const { modelLocal } = parseModelId(body.model);
-  const tools = Array.isArray(body.tools)
-    ? body.tools.filter((tool): tool is ChatTool =>
-        tool?.type === "function" &&
-        Boolean(tool.function) &&
-        typeof tool.function.name === "string" &&
-        tool.function.name.length > 0,
-      )
-    : [];
   return {
     model: body.model,
     modelLocal,

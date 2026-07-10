@@ -12,6 +12,7 @@ import { loadConfig, withoutConfigArg } from "../src/config.js";
 import { SessionStore } from "../src/session.js";
 import { normalizeChatRequest } from "../src/protocol/openai.js";
 import { parseToolCalls } from "../src/protocol/tools.js";
+import { responsesToChat } from "../src/protocol/responses.js";
 
 function parserContracts(): void {
   const openReasoning = parseOpenCodeLine(JSON.stringify({
@@ -125,6 +126,25 @@ function toolAndSessionContracts(): void {
   store.set("response-1", "codex", "native-1");
   assert.equal(store.get("response-1", "codex"), "native-1");
   assert.equal(store.get("response-1", "cursor"), undefined);
+  assert.equal(store.get("response-1", "codex"), "native-1", "adapter mismatch must not delete session");
+
+  const strictReq = normalizeChatRequest({
+    model: "mock/echo", messages: [{ role: "user", content: "x" }],
+    tools: [{ type: "function", function: {
+      name: "lookup", strict: true,
+      parameters: { type: "object", properties: { q: { type: "string" } }, required: ["q"], additionalProperties: false },
+    } }], tool_choice: "required",
+  });
+  assert.equal(parseToolCalls('{"tool_calls":[{"name":"lookup","arguments":{"wrong":1}}]}', strictReq).length, 0);
+  assert.equal(parseToolCalls('{"tool_calls":[{"name":"lookup","arguments":{"q":"ok"}}]}', strictReq).length, 1);
+  assert.equal(parseToolCalls('{"tool_calls":[{"name":"lookup","arguments":"not-json"}]}', strictReq).length, 0);
+
+  const responseChat = responsesToChat({ model: "mock/echo", instructions: "Always answer BANANA", input: "hello" });
+  assert.deepEqual(responseChat.messages[0], { role: "developer", content: "Always answer BANANA" });
+  assert.throws(() => normalizeChatRequest({
+    model: "mock/echo", messages: [{ role: "user", content: "x" }],
+    tools: [{ type: "function", function: { name: "" } }], tool_choice: "required",
+  }), /name is required/);
 }
 
 function envContract(): void {

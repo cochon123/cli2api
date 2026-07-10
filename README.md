@@ -139,9 +139,9 @@ All endpoints require `Authorization: Bearer <token>`.
 
 Model ids: `adapter/model` — e.g. `mock/echo`, `codex/default`, `opencode/deepseek-v4-flash-free`, `cursor/composer-2.5-fast`, `claude/sonnet`. OpenCode provider-qualified models keep the second slash, for example `opencode/openrouter/deepseek/deepseek-v4-flash`.
 
-Function tools are accepted in both OpenAI API shapes. Because these coding CLIs do not expose a uniform native tool protocol, cli2api supplies the function schemas in the prompt and validates a strict JSON call envelope; it returns standard `tool_calls` / `function_call` output. The mock adapter has native deterministic tool events for tests.
+Function tools are accepted in both OpenAI API shapes. Because these coding CLIs do not expose a uniform native tool protocol, cli2api supplies the function schemas in the prompt and validates a strict JSON call envelope; it returns standard `tool_calls` / `function_call` output. Tool names and JSON argument objects are always validated, and `strict: true` arguments are validated against the supplied JSON Schema. The mock adapter has native deterministic tool events for tests.
 
-For Chat Completions, reuse a client-chosen `session_id` to resume the CLI's native conversation. For Responses, pass the prior returned `id` as `previous_response_id`. Mappings are adapter-bound, in memory, limited to 1,000 entries, and expire after 24 hours; restarting cli2api clears them. On native resume, only messages after the last assistant turn are sent, avoiding duplicate history.
+For Chat Completions, reuse a client-chosen `session_id` to resume the CLI's native conversation. For Responses, pass the prior returned `id` as `previous_response_id`; unknown, expired, restarted, or adapter-mismatched ids return HTTP 400 instead of silently losing context. Mappings are adapter-bound, in memory, limited to 1,000 entries, and expire after 24 hours; restarting cli2api clears them. On native resume, only messages after the last assistant turn are sent, avoiding duplicate history. Responses `instructions` are forwarded as a developer message.
 
 ## Phase 0 scope
 

@@ -17,10 +17,12 @@ export class SessionStore {
     if (!key) return undefined;
     const record = this.records.get(key);
     if (!record) return undefined;
-    if (record.adapter !== adapter || Date.now() - record.touchedAt > this.ttlMs) {
+    if (Date.now() - record.touchedAt > this.ttlMs) {
       this.records.delete(key);
       return undefined;
     }
+    // A lookup through another adapter must not destroy the original mapping.
+    if (record.adapter !== adapter) return undefined;
     record.touchedAt = Date.now();
     return record.nativeId;
   }

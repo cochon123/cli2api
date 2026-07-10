@@ -1,4 +1,7 @@
 import type { ChatEvent, NormalizedChatRequest, ToolCall } from "../types.js";
+import { Ajv } from "ajv";
+
+const ajv = new Ajv({ allErrors: true, strict: false });
 
 function parseJsonObject(text: string): Record<string, unknown> | null {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
@@ -19,7 +22,7 @@ function parseJsonObject(text: string): Record<string, unknown> | null {
   return null;
 }
 
-function callFromUnknown(value: unknown, allowed: Set<string>): ToolCall | null {
+function callFromUnknown(value: unknown, req: NormalizedChatRequest): ToolCall | null {
   if (!value || typeof value !== "object") return null;
   const raw = value as Record<string, unknown>;
   const nested = raw.function && typeof raw.function === "object"
@@ -30,18 +33,30 @@ function callFromUnknown(value: unknown, allowed: Set<string>): ToolCall | null 
     : typeof raw.tool === "string"
       ? raw.tool
       : "";
-  if (!name || !allowed.has(name)) return null;
+  const definition = req.tools.find((tool) => tool.function.name === name)?.function;
+  if (!name || !definition) return null;
   const args = nested.arguments ?? raw.arguments ?? {};
   let argumentsJson: string;
   if (typeof args === "string") {
     try {
-      JSON.parse(args);
+      const parsed = JSON.parse(args) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
       argumentsJson = args;
     } catch {
-      argumentsJson = JSON.stringify({ value: args });
+      return null;
     }
   } else {
+    if (!args || typeof args !== "object" || Array.isArray(args)) return null;
     argumentsJson = JSON.stringify(args ?? {});
+  }
+  if (definition.strict) {
+    try {
+      const validate = ajv.compile(definition.parameters ?? { type: "object" });
+      if (!validate(JSON.parse(argumentsJson))) return null;
+    } catch {
+      // Invalid schemas are rejected at the tool-call boundary as well.
+      return null;
+    }
   }
   return {
     id: typeof raw.id === "string" && raw.id ? raw.id : `call_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
@@ -53,14 +68,13 @@ function callFromUnknown(value: unknown, allowed: Set<string>): ToolCall | null 
 export function parseToolCalls(text: string, req: NormalizedChatRequest): ToolCall[] {
   const object = parseJsonObject(text);
   if (!object) return [];
-  const allowed = new Set(req.tools.map((tool) => tool.function.name));
   const rawCalls = Array.isArray(object.tool_calls)
     ? object.tool_calls
     : object.tool || object.name
       ? [object]
       : [];
   return rawCalls
-    .map((value) => callFromUnknown(value, allowed))
+    .map((value) => callFromUnknown(value, req))
     .filter((value): value is ToolCall => Boolean(value));
 }
 
@@ -80,19 +94,31 @@ export async function* transformToolEvents(
   let content = "";
   let done: Extract<ChatEvent, { type: "done" }> | undefined;
   let nativeCalls = false;
+  let invalidNativeCalls = false;
   for await (const event of events) {
     if (event.type === "delta" && (event.channel ?? "content") === "content") {
       content += event.text;
     } else if (event.type === "done") {
       done = event;
+    } else if (event.type === "tool_call") {
+      const validated = callFromUnknown(event.call, req);
+      if (validated) {
+        nativeCalls = true;
+        yield { type: "tool_call", call: validated };
+      } else {
+        invalidNativeCalls = true;
+      }
     } else {
-      if (event.type === "tool_call") nativeCalls = true;
       yield event;
     }
   }
 
   if (nativeCalls) {
     yield { ...(done ?? { type: "done", finishReason: "tool_calls" }), finishReason: "tool_calls" };
+    return;
+  }
+  if (invalidNativeCalls) {
+    yield { type: "error", message: "Adapter returned a tool call that failed function or strict schema validation", code: "invalid_tool_call" };
     return;
   }
 
