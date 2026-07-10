@@ -7,7 +7,10 @@ const MAX_STDERR_BYTES = 65_536;
 
 export interface RunCommandOptions {
   cwd?: string;
+  /** Explicit child environment overrides. These do not re-enable full env inheritance. */
   env?: NodeJS.ProcessEnv;
+  /** Additional parent environment variable names to copy into the scrubbed child env. */
+  inheritEnv?: string[];
   timeoutMs?: number;
   signal?: AbortSignal;
   stdin?: string;
@@ -31,12 +34,82 @@ interface SpawnedChild {
   dispose: () => void;
 }
 
+/**
+ * Environment values needed for a normal local CLI process, without forwarding
+ * unrelated API keys and application secrets from the gateway process.
+ */
+const BASE_CHILD_ENV_KEYS = [
+  "HOME",
+  "USER",
+  "LOGNAME",
+  "PATH",
+  "SHELL",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "LANG",
+  "LANGUAGE",
+  "TERM",
+  "COLORTERM",
+  "NO_COLOR",
+  "FORCE_COLOR",
+  "XDG_CONFIG_HOME",
+  "XDG_CACHE_HOME",
+  "XDG_DATA_HOME",
+  "XDG_STATE_HOME",
+] as const;
+
+function configuredChildEnvKeys(): string[] {
+  return (process.env.CLI2API_CHILD_ENV_ALLOWLIST ?? "")
+    .split(",")
+    .map((key) => key.trim())
+    .filter((key) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
+}
+
+/** Build the allowlisted environment used by every spawned command. */
+export function buildChildEnv(
+  overrides: NodeJS.ProcessEnv = {},
+  inheritEnv: string[] = [],
+): NodeJS.ProcessEnv {
+  const result: NodeJS.ProcessEnv = {};
+  const keys = new Set<string>([
+    ...BASE_CHILD_ENV_KEYS,
+    ...Object.keys(process.env).filter((key) => key === "LC_ALL" || key.startsWith("LC_")),
+    ...inheritEnv,
+    ...configuredChildEnvKeys(),
+  ]);
+
+  for (const key of keys) {
+    const value = process.env[key];
+    if (typeof value === "string") result[key] = value;
+  }
+  for (const [key, value] of Object.entries(overrides)) {
+    if (typeof value === "string") result[key] = value;
+    else delete result[key];
+  }
+  return result;
+}
+
 function terminateChild(child: ChildProcessWithoutNullStreams): void {
   if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
+  const signal = (name: NodeJS.Signals) => {
+    if (process.platform !== "win32" && child.pid) {
+      try {
+        // Children are spawned as their own process group. Agent CLIs often
+        // launch helpers which inherit stdio; killing only the parent leaves
+        // those pipes open and prevents the iterator from completing.
+        process.kill(-child.pid, name);
+        return;
+      } catch {
+        // The group may already be gone; fall back to the direct child handle.
+      }
+    }
+    child.kill(name);
+  };
+  signal("SIGTERM");
   setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGKILL");
+      signal("SIGKILL");
     }
   }, 2_000).unref();
 }
@@ -52,7 +125,7 @@ function spawnChild(
   args: string[],
   opts: RunCommandOptions,
 ): SpawnedChild {
-  const { cwd, env, timeoutMs = 120_000, signal, stdin } = opts;
+  const { cwd, env, inheritEnv, timeoutMs = 120_000, signal, stdin } = opts;
 
   if (signal?.aborted) {
     throw Object.assign(new Error("Aborted"), { code: "ABORT_ERR" });
@@ -60,9 +133,8 @@ function spawnChild(
 
   const child = spawn(command, args, {
     cwd,
-    // TODO(P1): scrub parent env — today children inherit the full process.env.
-    // Tracked in README; needs an allowlist + pass-through config before shipping.
-    env: { ...process.env, ...env },
+    env: buildChildEnv(env, inheritEnv),
+    detached: process.platform !== "win32",
     stdio: ["pipe", "pipe", "pipe"],
   });
 

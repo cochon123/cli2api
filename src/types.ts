@@ -7,6 +7,28 @@ export interface ChatMessage {
   content: string | ContentPart[] | null;
   name?: string;
   tool_call_id?: string;
+  tool_calls?: ToolCall[];
+}
+
+export interface FunctionDefinition {
+  name: string;
+  description?: string;
+  parameters?: Record<string, unknown>;
+  strict?: boolean;
+}
+
+export interface ChatTool {
+  type: "function";
+  function: FunctionDefinition;
+}
+
+export interface ToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string;
+  };
 }
 
 export type ContentPart =
@@ -23,6 +45,10 @@ export interface ChatCompletionRequest {
   top_p?: number;
   stop?: string | string[];
   user?: string;
+  tools?: ChatTool[];
+  tool_choice?: "none" | "auto" | "required" | { type: "function"; function: { name: string } };
+  /** cli2api extension: stable gateway session key for native CLI resume. */
+  session_id?: string;
   /** Pass-through / debug */
   [key: string]: unknown;
 }
@@ -31,9 +57,10 @@ export interface ChatCompletionChoice {
   index: number;
   message: {
     role: "assistant";
-    content: string;
+    content: string | null;
+    tool_calls?: ToolCall[];
   };
-  finish_reason: "stop" | "length" | "error" | null;
+  finish_reason: "stop" | "length" | "tool_calls" | "error" | null;
 }
 
 export interface ChatCompletionResponse {
@@ -63,8 +90,14 @@ export interface ChatCompletionChunk {
       reasoning?: string;
       /** Alternate field some OpenAI-compatible clients expect */
       reasoning_content?: string;
+      tool_calls?: Array<{
+        index: number;
+        id?: string;
+        type?: "function";
+        function?: { name?: string; arguments?: string };
+      }>;
     };
-    finish_reason: "stop" | "length" | "error" | null;
+    finish_reason: "stop" | "length" | "tool_calls" | "error" | null;
   }>;
 }
 
@@ -86,13 +119,20 @@ export interface NormalizedChatRequest {
   temperature?: number;
   maxTokens?: number;
   raw: ChatCompletionRequest;
+  tools: ChatTool[];
+  toolChoice?: ChatCompletionRequest["tool_choice"];
+  sessionId?: string;
+  /** Native CLI session id, populated by the gateway session store. */
+  nativeSessionId?: string;
 }
 
 export type DeltaChannel = "content" | "reasoning";
 
 export type ChatEvent =
   | { type: "delta"; text: string; channel?: DeltaChannel }
-  | { type: "done"; finishReason: "stop" | "length" | "error"; usage?: ChatCompletionResponse["usage"] }
+  | { type: "tool_call"; call: ToolCall }
+  | { type: "session"; id: string }
+  | { type: "done"; finishReason: "stop" | "length" | "tool_calls" | "error"; usage?: ChatCompletionResponse["usage"] }
   | { type: "error"; message: string; code?: string };
 
 export interface HealthStatus {

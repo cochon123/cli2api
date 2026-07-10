@@ -4,6 +4,16 @@ import { streamSSE } from "hono/streaming";
 import type { AdapterRegistry } from "../adapters/registry.js";
 import { collectChatText } from "../adapters/types.js";
 import type { ChatCompletionRequest } from "../types.js";
+import { transformToolEvents } from "../protocol/tools.js";
+import { SessionStore } from "../session.js";
+import {
+  buildResponse,
+  functionOutput,
+  messageOutput,
+  responseId,
+  responsesToChat,
+  type ResponsesRequest,
+} from "../protocol/responses.js";
 import {
   buildChunk,
   buildCompletionResponse,
@@ -43,6 +53,7 @@ function tokensEqual(got: string, expected: string): boolean {
 export function createApp(opts: ServerOptions): Hono {
   const app = new Hono();
   const { registry, verbose, token } = opts;
+  const sessions = new SessionStore();
 
   // No CORS: this gateway is for local SDK/script clients, not browser pages.
   // Wildcard CORS + loopback would let any tab on the machine read agent output.
@@ -62,7 +73,7 @@ export function createApp(opts: ServerOptions): Hono {
       name: "cli2api",
       version: "0.1.0",
       docs: "Local OpenAI-compatible gateway for coding CLIs",
-      endpoints: ["/health", "/v1/models", "/v1/chat/completions"],
+      endpoints: ["/health", "/v1/models", "/v1/chat/completions", "/v1/responses"],
       default_adapter: registry.defaultAdapterId,
     }),
   );
@@ -74,10 +85,9 @@ export function createApp(opts: ServerOptions): Hono {
   });
 
   app.get("/v1/models", async (c) => {
-    const all = await Promise.all(registry.list().map((a) => a.listModels()));
     return c.json({
       object: "list",
-      data: all.flat(),
+      data: await registry.listModels(),
     });
   });
 
@@ -90,8 +100,11 @@ export function createApp(opts: ServerOptions): Hono {
     }
 
     let req;
+    let requestedModel = "";
     try {
       req = normalizeChatRequest(body);
+      requestedModel = req.model;
+      req = registry.normalizeRequest(req);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const status = (err as { status?: number }).status ?? 400;
@@ -105,6 +118,10 @@ export function createApp(opts: ServerOptions): Hono {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: { message, type: "invalid_request_error" } }, 400);
     }
+    req = {
+      ...req,
+      nativeSessionId: sessions.get(req.sessionId, adapter.id),
+    };
 
     if (verbose) {
       console.error(`[cli2api] ${adapter.id} model=${req.model} stream=${req.stream} msgs=${req.messages.length}`);
@@ -116,15 +133,16 @@ export function createApp(opts: ServerOptions): Hono {
 
     if (req.stream) {
       return streamSSE(c, async (stream) => {
+        let toolIndex = 0;
         // Initial role chunk (OpenAI SDK expects this)
         await stream.writeSSE({
           data: JSON.stringify(
-            buildChunk({ id, model: req.model, delta: { role: "assistant" } }),
+            buildChunk({ id, model: requestedModel, delta: { role: "assistant" } }),
           ),
         });
 
         try {
-          for await (const ev of adapter.chat(req, ac.signal)) {
+          for await (const ev of transformToolEvents(adapter.chat(req, ac.signal), req)) {
             if (ev.type === "delta") {
               const channel = ev.channel ?? "content";
               if (channel === "reasoning") {
@@ -132,7 +150,7 @@ export function createApp(opts: ServerOptions): Hono {
                   data: JSON.stringify(
                     buildChunk({
                       id,
-                      model: req.model,
+                      model: requestedModel,
                       delta: { reasoning: ev.text, reasoning_content: ev.text },
                     }),
                   ),
@@ -140,10 +158,29 @@ export function createApp(opts: ServerOptions): Hono {
               } else {
                 await stream.writeSSE({
                   data: JSON.stringify(
-                    buildChunk({ id, model: req.model, delta: { content: ev.text } }),
+                    buildChunk({ id, model: requestedModel, delta: { content: ev.text } }),
                   ),
                 });
               }
+            } else if (ev.type === "tool_call") {
+              await stream.writeSSE({
+                data: JSON.stringify(
+                  buildChunk({
+                    id,
+                    model: requestedModel,
+                    delta: {
+                      tool_calls: [{
+                        index: toolIndex++,
+                        id: ev.call.id,
+                        type: "function",
+                        function: ev.call.function,
+                      }],
+                    },
+                  }),
+                ),
+              });
+            } else if (ev.type === "session") {
+              sessions.set(req.sessionId, adapter.id, ev.id);
             } else if (ev.type === "error") {
               await stream.writeSSE({
                 data: JSON.stringify({
@@ -155,7 +192,7 @@ export function createApp(opts: ServerOptions): Hono {
             } else if (ev.type === "done") {
               await stream.writeSSE({
                 data: JSON.stringify(
-                  buildChunk({ id, model: req.model, finishReason: ev.finishReason }),
+                  buildChunk({ id, model: requestedModel, finishReason: ev.finishReason }),
                 ),
               });
             }
@@ -173,22 +210,168 @@ export function createApp(opts: ServerOptions): Hono {
 
     // Non-streaming
     try {
-      const result = await collectChatText(adapter.chat(req, ac.signal));
+      const result = await collectChatText(transformToolEvents(adapter.chat(req, ac.signal), req));
+      if (result.nativeSessionId) sessions.set(req.sessionId, adapter.id, result.nativeSessionId);
       if (result.error) {
         return c.json(
           { error: { message: result.error, type: "server_error" } },
           502,
         );
       }
-      return c.json(
-        buildCompletionResponse({
+      const response = buildCompletionResponse({
           id,
-          model: req.model,
+          model: requestedModel,
           content: result.text,
           finishReason: result.finishReason,
           usage: result.usage,
-        }),
-      );
+          toolCalls: result.toolCalls,
+        });
+      return c.json(req.sessionId ? { ...response, session_id: req.sessionId } : response);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: { message, type: "server_error" } }, 500);
+    }
+  });
+
+  app.post("/v1/responses", async (c) => {
+    let body: ResponsesRequest;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: { message: "Invalid JSON body", type: "invalid_request_error" } }, 400);
+    }
+
+    let req;
+    let requestedModel = "";
+    try {
+      req = normalizeChatRequest(responsesToChat(body));
+      requestedModel = req.model;
+      req = registry.normalizeRequest(req);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: { message, type: "invalid_request_error" } }, 400);
+    }
+
+    let adapter;
+    try {
+      adapter = registry.resolve(req.model, opts.adapter);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return c.json({ error: { message, type: "invalid_request_error" } }, 400);
+    }
+
+    const id = responseId();
+    const inheritedSession = sessions.get(body.previous_response_id, adapter.id);
+    if (body.previous_response_id && !inheritedSession) {
+      return c.json({
+        error: {
+          message: `Unknown, expired, or adapter-mismatched previous_response_id: ${body.previous_response_id}`,
+          type: "invalid_request_error",
+          param: "previous_response_id",
+        },
+      }, 400);
+    }
+    req = { ...req, nativeSessionId: inheritedSession };
+    if (inheritedSession) sessions.set(id, adapter.id, inheritedSession);
+    const ac = new AbortController();
+    c.req.raw.signal.addEventListener("abort", () => ac.abort(), { once: true });
+
+    if (req.stream) {
+      return streamSSE(c, async (stream) => {
+        let sequenceNumber = 0;
+        const writeEvent = async (type: string, payload: Record<string, unknown>) => {
+          await stream.writeSSE({
+            event: type,
+            data: JSON.stringify({ type, sequence_number: sequenceNumber++, ...payload }),
+          });
+        };
+        const created = buildResponse({ id, model: requestedModel, status: "in_progress" });
+        created.output = [];
+        await writeEvent("response.created", { response: created });
+        await writeEvent("response.in_progress", { response: created });
+        let text = "";
+        let reasoning = "";
+        const calls = [] as import("../types.js").ToolCall[];
+        const msgId = `msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+        const reasoningId = `rs_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+        const outputItems: Array<Record<string, unknown>> = [];
+        let usage: import("../types.js").ChatCompletionResponse["usage"];
+        let nextOutputIndex = 0;
+        let messageOutputIndex = -1;
+        let reasoningOutputIndex = -1;
+        let messageAdded = false;
+        try {
+          for await (const ev of transformToolEvents(adapter.chat(req, ac.signal), req)) {
+            if (ev.type === "session") {
+              sessions.set(id, adapter.id, ev.id);
+            } else if (ev.type === "delta" && (ev.channel ?? "content") === "content") {
+              if (!messageAdded) {
+                messageAdded = true;
+                messageOutputIndex = nextOutputIndex++;
+                await writeEvent("response.output_item.added", { response_id: id, output_index: messageOutputIndex, item: { ...messageOutput(msgId, ""), status: "in_progress", content: [] } });
+                await writeEvent("response.content_part.added", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
+              }
+              text += ev.text;
+              await writeEvent("response.output_text.delta", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, delta: ev.text });
+            } else if (ev.type === "delta") {
+              if (reasoningOutputIndex < 0) {
+                reasoningOutputIndex = nextOutputIndex++;
+                await writeEvent("response.output_item.added", { response_id: id, output_index: reasoningOutputIndex, item: { id: reasoningId, type: "reasoning", status: "in_progress", summary: [] } });
+                await writeEvent("response.reasoning_summary_part.added", { response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, part: { type: "summary_text", text: "" } });
+              }
+              reasoning += ev.text;
+              await writeEvent("response.reasoning_summary_text.delta", { response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, delta: ev.text });
+            } else if (ev.type === "tool_call") {
+              const outputIndex = nextOutputIndex++;
+              calls.push(ev.call);
+              const item = functionOutput(ev.call);
+              outputItems[outputIndex] = item;
+              await writeEvent("response.output_item.added", { response_id: id, output_index: outputIndex, item: { ...item, status: "in_progress", arguments: "" } });
+              await writeEvent("response.function_call_arguments.delta", { response_id: id, item_id: item.id, output_index: outputIndex, delta: ev.call.function.arguments });
+              await writeEvent("response.function_call_arguments.done", { response_id: id, item_id: item.id, output_index: outputIndex, arguments: ev.call.function.arguments });
+              await writeEvent("response.output_item.done", { response_id: id, output_index: outputIndex, item });
+            } else if (ev.type === "error") {
+              const failed = buildResponse({ id, model: requestedModel, status: "failed", error: { message: ev.message, code: ev.code } });
+              await writeEvent("response.failed", { response: failed });
+              return;
+            } else if (ev.type === "done") {
+              usage = ev.usage;
+            }
+          }
+          if (reasoningOutputIndex >= 0) {
+            const item = { id: reasoningId, type: "reasoning", status: "completed", summary: [{ type: "summary_text", text: reasoning }] };
+            outputItems[reasoningOutputIndex] = item;
+            await writeEvent("response.reasoning_summary_text.done", { response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, text: reasoning });
+            await writeEvent("response.reasoning_summary_part.done", { response_id: id, item_id: reasoningId, output_index: reasoningOutputIndex, summary_index: 0, part: { type: "summary_text", text: reasoning } });
+            await writeEvent("response.output_item.done", { response_id: id, output_index: reasoningOutputIndex, item });
+          }
+          if (!calls.length) {
+            if (!messageAdded) {
+              messageOutputIndex = nextOutputIndex++;
+              await writeEvent("response.output_item.added", { response_id: id, output_index: messageOutputIndex, item: { ...messageOutput(msgId, ""), status: "in_progress", content: [] } });
+              await writeEvent("response.content_part.added", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, part: { type: "output_text", text: "", annotations: [] } });
+            }
+            const item = messageOutput(msgId, text);
+            outputItems[messageOutputIndex] = item;
+            await writeEvent("response.output_text.done", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, text });
+            await writeEvent("response.content_part.done", { response_id: id, item_id: msgId, output_index: messageOutputIndex, content_index: 0, part: { type: "output_text", text, annotations: [] } });
+            await writeEvent("response.output_item.done", { response_id: id, output_index: messageOutputIndex, item });
+          }
+          const response = buildResponse({ id, model: requestedModel, text, reasoning, toolCalls: calls, usage });
+          response.output = outputItems;
+          await writeEvent("response.completed", { response });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          await writeEvent("error", { message });
+        }
+      });
+    }
+
+    try {
+      const result = await collectChatText(transformToolEvents(adapter.chat(req, ac.signal), req));
+      if (result.nativeSessionId) sessions.set(id, adapter.id, result.nativeSessionId);
+      if (result.error) return c.json({ error: { message: result.error, type: "server_error" } }, 502);
+      return c.json(buildResponse({ id, model: requestedModel, text: result.text, reasoning: result.reasoning, toolCalls: result.toolCalls, usage: result.usage }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: { message, type: "server_error" } }, 500);
@@ -200,7 +383,7 @@ export function createApp(opts: ServerOptions): Hono {
     c.json(
       {
         error: {
-          message: `Unknown route ${c.req.method} ${c.req.path}. Try /v1/chat/completions or /v1/models.`,
+          message: `Unknown route ${c.req.method} ${c.req.path}. Try /v1/chat/completions, /v1/responses, or /v1/models.`,
           type: "invalid_request_error",
         },
       },

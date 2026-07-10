@@ -697,13 +697,18 @@ npm run bench</code></pre>
             </tr>
             <tr>
               <td>Claude Code</td>
-              <td>Headless / <code>-p</code> print mode; locked-down permission mode / tool allowlist by default</td>
-              <td>Medium</td>
+              <td>Headless <code>-p --output-format stream-json</code>; plan mode; built-in + MCP tools disabled</td>
+              <td>Implemented (not live-tested: CLI unavailable)</td>
             </tr>
             <tr>
               <td>OpenCode</td>
-              <td>Headless/API mode; prefer read-only “plan” agent over full-access “build”</td>
-              <td>Depends</td>
+              <td><code>run --format json --thinking</code>; read-only “plan” agent; external plugins disabled</td>
+              <td>Done</td>
+            </tr>
+            <tr>
+              <td>Cursor Agent</td>
+              <td><code>-p --output-format stream-json --stream-partial-output</code>; ask mode + sandbox</td>
+              <td>Done</td>
             </tr>
             <tr>
               <td>Generic shell</td>
@@ -818,14 +823,14 @@ cli2api completion --model codex/default -p <span class="str">"ping"</span></cod
           </ul>
         </div>
         <div class="phase">
-          <div class="when">Phase 1 · usable MVP</div>
+          <div class="when">Phase 1 · usable MVP · IN PROGRESS</div>
           <h3>Make it daily-driver for local evals (and safe for strangers)</h3>
           <ul>
             <li>True token streaming from CLI JSONL where available</li>
             <li>Config file + model aliases + pinned token</li>
             <li>Concurrency limit + timeouts + abort (harden)</li>
-            <li>Env scrubbing for spawned CLI processes</li>
-            <li>Second adapter (Claude Code or OpenCode) — same contract suite, still restrictive defaults</li>
+            <li><strong>Done:</strong> env scrubbing for spawned CLI processes + explicit extra-key allowlist</li>
+            <li><strong>Done:</strong> OpenCode, Cursor Agent, and Claude Code adapters with restrictive defaults</li>
             <li>Richer <code>ChatEvent</code> union (tool started/completed) without claiming OpenAI tools parity yet</li>
           </ul>
         </div>
@@ -1012,10 +1017,10 @@ cli2api completion --model codex/default -p <span class="str">"ping"</span></cod
       <div class="callout">
         <div class="label">Suggested next move</div>
         <p>
-          Phase 0 is done. Streaming path: JSONL line reader + reasoning summaries
-          (<code>model_reasoning_summary=detailed</code>) fake-streamed as reasoning,
-          final <code>agent_message</code> fake-streamed as content. Next: P1 — env
-          scrubbing, config file, second adapter, and keep §12 lessons updated.
+          Phase 0 is done and P1 now includes Codex, OpenCode, Cursor Agent, and
+          Claude Code, scrubbed child environments, JSON config/model aliases,
+          function-call shaping, a Responses API subset, and native session resume.
+          Next: concurrency hardening and the remaining P2–P3 polish.
         </p>
       </div>
 
@@ -1053,6 +1058,20 @@ cli2api completion --model codex/default -p <span class="str">"ping"</span></cod
           HTTP SSE can still be “real” (line-by-line as events arrive). The gap is the CLI
           protocol, not the gateway transport.
         </li>
+      </ul>
+
+      <h3>Session fidelity belongs at the adapter boundary</h3>
+      <ul>
+        <li>Each CLI uses a different resume flag and emits its native session id in a different JSON event.</li>
+        <li>Keep API response ids separate from native ids, map them in memory, and bind every mapping to its adapter.</li>
+        <li>When a native transcript is resumed, send only the new tail after the last assistant turn; replaying the full history duplicates context.</li>
+      </ul>
+
+      <h3>Tool compatibility needs an explicit fallback contract</h3>
+      <ul>
+        <li>The CLIs do not share a callable tool-event protocol, so function schemas are supplied in the prompt using a strict JSON envelope.</li>
+        <li>Buffer only assistant content for tool-capable turns; keep reasoning and session events live, then validate names, JSON argument objects, and strict JSON Schemas before emitting API tool calls.</li>
+        <li>Responses streaming is semantic: emit lifecycle, output-text, and function-argument event types rather than wrapping Chat Completions chunks.</li>
       </ul>
 
       <h3>Reasoning effort ≠ reasoning on the wire</h3>
@@ -1107,6 +1126,55 @@ cli2api completion --model codex/default -p <span class="str">"ping"</span></cod
           Abort must kill the child (SIGTERM → SIGKILL). Client disconnect should not
           leave orphaned <code>codex</code> processes.
         </li>
+        <li>
+          Killing only the top-level CLI is insufficient when helpers inherit its pipes.
+          Spawn a dedicated process group and terminate the group so timeouts actually
+          close the JSONL iterator.
+        </li>
+      </ul>
+
+      <h3>OpenCode JSON is block-level; Cursor is genuinely partial</h3>
+      <ul>
+        <li>
+          OpenCode <code>run --format json --thinking</code> emits completed
+          <code>reasoning</code> and <code>text</code> parts, followed by a
+          <code>step_finish</code> carrying usage. Fake-stream those completed blocks.
+        </li>
+        <li>
+          Cursor Agent with <code>--stream-partial-output</code> emits native
+          <code>thinking</code> deltas and partial assistant text, then repeats the full
+          assistant message. Keep partial deltas and suppress the duplicate full block.
+        </li>
+        <li>
+          A tiny completion can succeed while an agent model stalls on a full benchmark
+          prompt. Contract probes and realistic one-board tests catch different failures.
+        </li>
+      </ul>
+
+      <h3>Claude can be implemented safely without pretending it was tested</h3>
+      <ul>
+        <li>
+          The official headless contract supports <code>-p</code>,
+          <code>--output-format stream-json</code>, and
+          <code>--include-partial-messages</code> (with verbose output).
+        </li>
+        <li>
+          Default the unattended adapter to <code>--permission-mode plan</code>, disable
+          built-in tools with an empty <code>--tools</code> value, and exclude configured
+          MCP tools. Keep the adapter marked unverified until a real installed CLI passes.
+        </li>
+      </ul>
+
+      <h3>Environment scrubbing needs an escape hatch, not full inheritance</h3>
+      <ul>
+        <li>
+          Preserve only normal process/runtime paths, locale, home/XDG locations, and the
+          narrow auth/config variables each adapter actually needs.
+        </li>
+        <li>
+          Unrelated application secrets must not reach spawned agents. Exceptional keys
+          are explicit via <code>CLI2API_CHILD_ENV_ALLOWLIST</code>.
+        </li>
       </ul>
 
       <h3>Protocol / client compatibility</h3>
@@ -1131,7 +1199,7 @@ cli2api completion --model codex/default -p <span class="str">"ping"</span></cod
         <li>Is there a separate flag for summaries / traces vs effort / temperature?</li>
         <li>Map: lifecycle → optional status; model thought → reasoning; final answer → content.</li>
         <li>If blobs not tokens: fake-stream words; document honesty in the capability matrix.</li>
-        <li>Close stdin; stream lines; kill on abort; scrub env (still P1).</li>
+        <li>Close stdin; stream lines; kill on abort; use the scrubbed env helper.</li>
       </ol>
 
       <div class="callout">

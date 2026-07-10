@@ -6,21 +6,57 @@ import { collectChatText } from "./adapters/types.js";
 import { listen } from "./server/listen.js";
 import { normalizeChatRequest } from "./protocol/openai.js";
 import type { AdapterId } from "./adapters/registry.js";
+import { configPathFromArgv, loadConfig, withoutConfigArg, type LoadedConfig } from "./config.js";
+import { transformToolEvents } from "./protocol/tools.js";
 
 const DEFAULT_PORT = 3927;
+
+let loadedConfig: LoadedConfig;
+try {
+  loadedConfig = await loadConfig({ explicitPath: configPathFromArgv(process.argv.slice(2)) });
+} catch (error) {
+  console.error(error instanceof Error ? error.message : error);
+  process.exit(1);
+}
 
 function env(name: string): string | undefined {
   const v = process.env[name];
   return v && v.length ? v : undefined;
 }
 
-function buildRegistry(opts: { adapter?: string; codexBin?: string; cwd?: string }) {
-  const defaultAdapter = (opts.adapter as AdapterId | undefined) ?? (env("CLI2API_ADAPTER") as AdapterId | undefined) ?? "mock";
+function isAdapterId(value: string | undefined): value is AdapterId {
+  return value === "mock" || value === "codex" || value === "opencode" || value === "cursor" || value === "claude";
+}
+
+interface RegistryCliOptions {
+  adapter?: string;
+  codexBin?: string;
+  opencodeBin?: string;
+  cursorBin?: string;
+  claudeBin?: string;
+  cwd?: string;
+}
+
+function buildRegistry(opts: RegistryCliOptions) {
+  const defaultAdapter = (opts.adapter as AdapterId | undefined) ?? (env("CLI2API_ADAPTER") as AdapterId | undefined) ?? loadedConfig.defaultAdapter ?? "mock";
   return createRegistry({
-    defaultAdapter: defaultAdapter === "codex" || defaultAdapter === "mock" ? defaultAdapter : "mock",
+    defaultAdapter: isAdapterId(defaultAdapter) ? defaultAdapter : "mock",
+    modelAliases: loadedConfig.modelAliases,
     codex: {
-      binary: opts.codexBin ?? env("CLI2API_CODEX_BIN") ?? "codex",
-      cwd: opts.cwd ?? env("CLI2API_CWD"),
+      binary: opts.codexBin ?? env("CLI2API_CODEX_BIN") ?? loadedConfig.binaries?.codex ?? "codex",
+      cwd: opts.cwd ?? env("CLI2API_CWD") ?? loadedConfig.cwd,
+    },
+    opencode: {
+      binary: opts.opencodeBin ?? env("CLI2API_OPENCODE_BIN") ?? loadedConfig.binaries?.opencode ?? "opencode",
+      cwd: opts.cwd ?? env("CLI2API_CWD") ?? loadedConfig.cwd,
+    },
+    cursor: {
+      binary: opts.cursorBin ?? env("CLI2API_CURSOR_BIN") ?? loadedConfig.binaries?.cursor ?? "cursor-agent",
+      cwd: opts.cwd ?? env("CLI2API_CWD") ?? loadedConfig.cwd,
+    },
+    claude: {
+      binary: opts.claudeBin ?? env("CLI2API_CLAUDE_BIN") ?? loadedConfig.binaries?.claude ?? "claude",
+      cwd: opts.cwd ?? env("CLI2API_CWD") ?? loadedConfig.cwd,
     },
   });
 }
@@ -34,22 +70,29 @@ const program = new Command();
 program
   .name("cli2api")
   .description("Local OpenAI-compatible gateway for coding CLIs (localhost only)")
-  .version("0.1.0");
+  .version("0.1.0")
+  .option("--config <path>", "JSON config path (also CLI2API_CONFIG)");
 
 program
   .command("serve")
   .description("Start the local OpenAI-compatible HTTP server")
-  .option("-p, --port <port>", "Port to listen on", String(DEFAULT_PORT))
+  .option("-p, --port <port>", "Port to listen on", String(Number(env("CLI2API_PORT")) || loadedConfig.port || DEFAULT_PORT))
   .option("-H, --host <host>", "Host to bind (loopback only)", "127.0.0.1")
-  .option("-a, --adapter <id>", "Default adapter when model has no prefix (mock|codex)", env("CLI2API_ADAPTER") ?? "mock")
-  .option("-t, --token <token>", "Bearer token (also CLI2API_TOKEN); auto-generated if omitted", env("CLI2API_TOKEN"))
+  .option("-a, --adapter <id>", "Default adapter (mock|codex|opencode|cursor|claude)", env("CLI2API_ADAPTER") ?? loadedConfig.defaultAdapter ?? "mock")
+  .option("-t, --token <token>", "Bearer token (also CLI2API_TOKEN); auto-generated if omitted", env("CLI2API_TOKEN") ?? loadedConfig.token)
   .option("--codex-bin <path>", "Codex binary path", env("CLI2API_CODEX_BIN"))
-  .option("--cwd <dir>", "Working directory for CLI adapters", env("CLI2API_CWD"))
+  .option("--opencode-bin <path>", "OpenCode binary path", env("CLI2API_OPENCODE_BIN"))
+  .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
+  .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
+  .option("--cwd <dir>", "Working directory for CLI adapters", env("CLI2API_CWD") ?? loadedConfig.cwd)
   .option("-v, --verbose", "Log requests", false)
   .action(async (opts) => {
     const registry = buildRegistry({
       adapter: opts.adapter,
       codexBin: opts.codexBin,
+      opencodeBin: opts.opencodeBin,
+      cursorBin: opts.cursorBin,
+      claudeBin: opts.claudeBin,
       cwd: opts.cwd,
     });
     const port = Number(opts.port) || DEFAULT_PORT;
@@ -69,6 +112,7 @@ program
       const base = `http://${server.host}:${server.port}`;
       console.error(`cli2api listening on ${base}`);
       console.error(`  adapters: ${registry.list().map((a) => a.id).join(", ")} (default: ${registry.defaultAdapterId})`);
+      if (loadedConfig.loadedPaths.length) console.error(`  config:   ${loadedConfig.loadedPaths.join(", ")}`);
       console.error(`  health:   ${base}/health`);
       console.error(`  models:   ${base}/v1/models`);
       console.error(`  chat:     ${base}/v1/chat/completions`);
@@ -79,11 +123,7 @@ program
       console.error("Env swap:");
       console.error(`  OPENAI_BASE_URL=${base}/v1`);
       console.error(`  OPENAI_API_KEY=${token}`);
-      if (opts.adapter === "codex") {
-        console.error(`  OPENAI_MODEL=codex/default`);
-      } else {
-        console.error(`  OPENAI_MODEL=mock/echo`);
-      }
+      console.error(`  OPENAI_MODEL=${opts.adapter === "mock" ? "mock/echo" : `${opts.adapter}/default`}`);
 
       const shutdown = () => {
         console.error("\nshutting down…");
@@ -103,9 +143,18 @@ program
   .description("Check installed adapters / CLIs")
   .option("-a, --adapter <id>", "Only check one adapter")
   .option("--codex-bin <path>", "Codex binary path", env("CLI2API_CODEX_BIN"))
+  .option("--opencode-bin <path>", "OpenCode binary path", env("CLI2API_OPENCODE_BIN"))
+  .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
+  .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
   .option("--json", "Machine-readable JSON", false)
   .action(async (opts) => {
-    const registry = buildRegistry({ adapter: opts.adapter, codexBin: opts.codexBin });
+    const registry = buildRegistry({
+      adapter: opts.adapter,
+      codexBin: opts.codexBin,
+      opencodeBin: opts.opencodeBin,
+      cursorBin: opts.cursorBin,
+      claudeBin: opts.claudeBin,
+    });
     const adapters = opts.adapter
       ? [registry.get(opts.adapter)].filter(Boolean)
       : registry.list();
@@ -134,10 +183,17 @@ program
   .description("List models exposed by adapters")
   .option("--json", "Machine-readable JSON", false)
   .option("--codex-bin <path>", "Codex binary path", env("CLI2API_CODEX_BIN"))
+  .option("--opencode-bin <path>", "OpenCode binary path", env("CLI2API_OPENCODE_BIN"))
+  .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
+  .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
   .action(async (opts) => {
-    const registry = buildRegistry({ codexBin: opts.codexBin });
-    const all = await Promise.all(registry.list().map((a) => a.listModels()));
-    const models = all.flat();
+    const registry = buildRegistry({
+      codexBin: opts.codexBin,
+      opencodeBin: opts.opencodeBin,
+      cursorBin: opts.cursorBin,
+      claudeBin: opts.claudeBin,
+    });
+    const models = await registry.listModels();
     if (opts.json) printJson({ object: "list", data: models });
     else for (const m of models) console.log(m.id + (m.description ? `  # ${m.description}` : ""));
   });
@@ -149,23 +205,30 @@ program
   .option("-m, --model <id>", "Model id", "mock/echo")
   .option("-a, --adapter <id>", "Force adapter")
   .option("--codex-bin <path>", "Codex binary path", env("CLI2API_CODEX_BIN"))
+  .option("--opencode-bin <path>", "OpenCode binary path", env("CLI2API_OPENCODE_BIN"))
+  .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
+  .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
   .option("--cwd <dir>", "Working directory for CLI adapters", env("CLI2API_CWD"))
   .option("--json", "Print full result as JSON", false)
   .action(async (opts) => {
     const registry = buildRegistry({
       adapter: opts.adapter,
       codexBin: opts.codexBin,
+      opencodeBin: opts.opencodeBin,
+      cursorBin: opts.cursorBin,
+      claudeBin: opts.claudeBin,
       cwd: opts.cwd,
     });
     const body = {
       model: opts.model,
       messages: [{ role: "user" as const, content: opts.prompt }],
     };
-    const req = normalizeChatRequest(body);
+    const originalReq = normalizeChatRequest(body);
+    const req = registry.normalizeRequest(originalReq);
     const adapter = registry.resolve(req.model, opts.adapter);
-    const result = await collectChatText(adapter.chat(req, new AbortController().signal));
+    const result = await collectChatText(transformToolEvents(adapter.chat(req, new AbortController().signal), req));
     if (opts.json) {
-      printJson({ adapter: adapter.id, model: req.model, ...result });
+      printJson({ adapter: adapter.id, model: originalReq.model, resolvedModel: req.model, ...result });
     } else if (result.error) {
       console.error(result.error);
       process.exit(1);
@@ -186,4 +249,4 @@ program
     else for (const a of list) console.log(`${a.id}\t${a.description}`);
   });
 
-await program.parseAsync(process.argv);
+await program.parseAsync(withoutConfigArg(process.argv));
