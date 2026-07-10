@@ -89,7 +89,12 @@ export function runCommand(
 
 /** Resolve a binary from PATH; returns absolute path or null. No shell involved. */
 export async function which(binary: string): Promise<string | null> {
-  const result = await runCommand("which", [binary], { timeoutMs: 5_000 });
-  const path = result.stdout.trim().split(/\r?\n/)[0]?.trim() ?? "";
-  return result.code === 0 && path ? path : null;
+  try {
+    const result = await runCommand("which", [binary], { timeoutMs: 5_000 });
+    const path = result.stdout.trim().split(/\r?\n/)[0]?.trim() ?? "";
+    return result.code === 0 && path ? path : null;
+  } catch {
+    // Missing `which` binary (or spawn failure) → treat as not found.
+    return null;
+  }
 }

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { AdapterRegistry } from "../adapters/registry.js";
@@ -32,6 +33,13 @@ function unauthorized() {
   });
 }
 
+function tokensEqual(got: string, expected: string): boolean {
+  const gotBuf = Buffer.from(got);
+  const expectedBuf = Buffer.from(expected);
+  if (gotBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(gotBuf, expectedBuf);
+}
+
 export function createApp(opts: ServerOptions): Hono {
   const app = new Hono();
   const { registry, verbose, token } = opts;
@@ -43,7 +51,7 @@ export function createApp(opts: ServerOptions): Hono {
     const auth = c.req.header("authorization") || "";
     const m = /^Bearer\s+(.+)$/i.exec(auth);
     const got = m?.[1]?.trim();
-    if (!got || got !== token) {
+    if (!got || !tokensEqual(got, token)) {
       return unauthorized();
     }
     await next();
