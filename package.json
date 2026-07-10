@@ -16,6 +16,7 @@
     "completion": "tsx src/index.ts completion",
     "adapters": "tsx src/index.ts adapters",
     "test:smoke": "tsx scripts/smoke.ts",
+    "test:adapters": "tsx scripts/adapter-contract.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

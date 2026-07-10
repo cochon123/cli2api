@@ -14,12 +14,37 @@ function env(name: string): string | undefined {
   return v && v.length ? v : undefined;
 }
 
-function buildRegistry(opts: { adapter?: string; codexBin?: string; cwd?: string }) {
+function isAdapterId(value: string | undefined): value is AdapterId {
+  return value === "mock" || value === "codex" || value === "opencode" || value === "cursor" || value === "claude";
+}
+
+interface RegistryCliOptions {
+  adapter?: string;
+  codexBin?: string;
+  opencodeBin?: string;
+  cursorBin?: string;
+  claudeBin?: string;
+  cwd?: string;
+}
+
+function buildRegistry(opts: RegistryCliOptions) {
   const defaultAdapter = (opts.adapter as AdapterId | undefined) ?? (env("CLI2API_ADAPTER") as AdapterId | undefined) ?? "mock";
   return createRegistry({
-    defaultAdapter: defaultAdapter === "codex" || defaultAdapter === "mock" ? defaultAdapter : "mock",
+    defaultAdapter: isAdapterId(defaultAdapter) ? defaultAdapter : "mock",
     codex: {
       binary: opts.codexBin ?? env("CLI2API_CODEX_BIN") ?? "codex",
+      cwd: opts.cwd ?? env("CLI2API_CWD"),
+    },
+    opencode: {
+      binary: opts.opencodeBin ?? env("CLI2API_OPENCODE_BIN") ?? "opencode",
+      cwd: opts.cwd ?? env("CLI2API_CWD"),
+    },
+    cursor: {
+      binary: opts.cursorBin ?? env("CLI2API_CURSOR_BIN") ?? "cursor-agent",
+      cwd: opts.cwd ?? env("CLI2API_CWD"),
+    },
+    claude: {
+      binary: opts.claudeBin ?? env("CLI2API_CLAUDE_BIN") ?? "claude",
       cwd: opts.cwd ?? env("CLI2API_CWD"),
     },
   });
@@ -41,15 +66,21 @@ program
   .description("Start the local OpenAI-compatible HTTP server")
   .option("-p, --port <port>", "Port to listen on", String(DEFAULT_PORT))
   .option("-H, --host <host>", "Host to bind (loopback only)", "127.0.0.1")
-  .option("-a, --adapter <id>", "Default adapter when model has no prefix (mock|codex)", env("CLI2API_ADAPTER") ?? "mock")
+  .option("-a, --adapter <id>", "Default adapter (mock|codex|opencode|cursor|claude)", env("CLI2API_ADAPTER") ?? "mock")
   .option("-t, --token <token>", "Bearer token (also CLI2API_TOKEN); auto-generated if omitted", env("CLI2API_TOKEN"))
   .option("--codex-bin <path>", "Codex binary path", env("CLI2API_CODEX_BIN"))
+  .option("--opencode-bin <path>", "OpenCode binary path", env("CLI2API_OPENCODE_BIN"))
+  .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
+  .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
   .option("--cwd <dir>", "Working directory for CLI adapters", env("CLI2API_CWD"))
   .option("-v, --verbose", "Log requests", false)
   .action(async (opts) => {
     const registry = buildRegistry({
       adapter: opts.adapter,
       codexBin: opts.codexBin,
+      opencodeBin: opts.opencodeBin,
+      cursorBin: opts.cursorBin,
+      claudeBin: opts.claudeBin,
       cwd: opts.cwd,
     });
     const port = Number(opts.port) || DEFAULT_PORT;
@@ -79,11 +110,7 @@ program
       console.error("Env swap:");
       console.error(`  OPENAI_BASE_URL=${base}/v1`);
       console.error(`  OPENAI_API_KEY=${token}`);
-      if (opts.adapter === "codex") {
-        console.error(`  OPENAI_MODEL=codex/default`);
-      } else {
-        console.error(`  OPENAI_MODEL=mock/echo`);
-      }
+      console.error(`  OPENAI_MODEL=${opts.adapter === "mock" ? "mock/echo" : `${opts.adapter}/default`}`);
 
       const shutdown = () => {
         console.error("\nshutting down…");
@@ -103,9 +130,18 @@ program
   .description("Check installed adapters / CLIs")
   .option("-a, --adapter <id>", "Only check one adapter")
   .option("--codex-bin <path>", "Codex binary path", env("CLI2API_CODEX_BIN"))
+  .option("--opencode-bin <path>", "OpenCode binary path", env("CLI2API_OPENCODE_BIN"))
+  .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
+  .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
   .option("--json", "Machine-readable JSON", false)
   .action(async (opts) => {
-    const registry = buildRegistry({ adapter: opts.adapter, codexBin: opts.codexBin });
+    const registry = buildRegistry({
+      adapter: opts.adapter,
+      codexBin: opts.codexBin,
+      opencodeBin: opts.opencodeBin,
+      cursorBin: opts.cursorBin,
+      claudeBin: opts.claudeBin,
+    });
     const adapters = opts.adapter
       ? [registry.get(opts.adapter)].filter(Boolean)
       : registry.list();
@@ -134,8 +170,16 @@ program
   .description("List models exposed by adapters")
   .option("--json", "Machine-readable JSON", false)
   .option("--codex-bin <path>", "Codex binary path", env("CLI2API_CODEX_BIN"))
+  .option("--opencode-bin <path>", "OpenCode binary path", env("CLI2API_OPENCODE_BIN"))
+  .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
+  .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
   .action(async (opts) => {
-    const registry = buildRegistry({ codexBin: opts.codexBin });
+    const registry = buildRegistry({
+      codexBin: opts.codexBin,
+      opencodeBin: opts.opencodeBin,
+      cursorBin: opts.cursorBin,
+      claudeBin: opts.claudeBin,
+    });
     const all = await Promise.all(registry.list().map((a) => a.listModels()));
     const models = all.flat();
     if (opts.json) printJson({ object: "list", data: models });
@@ -149,12 +193,18 @@ program
   .option("-m, --model <id>", "Model id", "mock/echo")
   .option("-a, --adapter <id>", "Force adapter")
   .option("--codex-bin <path>", "Codex binary path", env("CLI2API_CODEX_BIN"))
+  .option("--opencode-bin <path>", "OpenCode binary path", env("CLI2API_OPENCODE_BIN"))
+  .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
+  .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
   .option("--cwd <dir>", "Working directory for CLI adapters", env("CLI2API_CWD"))
   .option("--json", "Print full result as JSON", false)
   .action(async (opts) => {
     const registry = buildRegistry({
       adapter: opts.adapter,
       codexBin: opts.codexBin,
+      opencodeBin: opts.opencodeBin,
+      cursorBin: opts.cursorBin,
+      claudeBin: opts.claudeBin,
       cwd: opts.cwd,
     });
     const body = {

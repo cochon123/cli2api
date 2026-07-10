@@ -392,6 +392,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
           cwd: opts.cwd,
           timeoutMs,
           signal,
+          inheritEnv: ["CODEX_HOME"],
         })) {
           if (signal.aborted) {
             yield { type: "error", message: "Aborted", code: "abort" };

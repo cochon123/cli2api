@@ -1,12 +1,18 @@
 import type { Adapter } from "./types.js";
 import { createMockAdapter } from "./mock.js";
 import { createCodexAdapter, type CodexAdapterOptions } from "./codex.js";
+import { createOpenCodeAdapter, type OpenCodeAdapterOptions } from "./opencode.js";
+import { createCursorAdapter, type CursorAdapterOptions } from "./cursor.js";
+import { createClaudeAdapter, type ClaudeAdapterOptions } from "./claude.js";
 
-export type AdapterId = "mock" | "codex";
+export type AdapterId = "mock" | "codex" | "opencode" | "cursor" | "claude";
 
 export interface CreateRegistryOptions {
   defaultAdapter?: AdapterId;
   codex?: CodexAdapterOptions;
+  opencode?: OpenCodeAdapterOptions;
+  cursor?: CursorAdapterOptions;
+  claude?: ClaudeAdapterOptions;
 }
 
 export class AdapterRegistry {
@@ -17,6 +23,9 @@ export class AdapterRegistry {
     this.defaultAdapterId = opts.defaultAdapter ?? "mock";
     this.register(createMockAdapter());
     this.register(createCodexAdapter(opts.codex));
+    this.register(createOpenCodeAdapter(opts.opencode));
+    this.register(createCursorAdapter(opts.cursor));
+    this.register(createClaudeAdapter(opts.claude));
   }
 
   register(adapter: Adapter): void {
@@ -33,16 +42,16 @@ export class AdapterRegistry {
 
   /** Resolve adapter from model id (`codex/o3`) or explicit --adapter. */
   resolve(model: string, preferredAdapter?: string): Adapter {
-    if (preferredAdapter) {
-      const a = this.adapters.get(preferredAdapter);
-      if (!a) throw Object.assign(new Error(`Unknown adapter: ${preferredAdapter}`), { status: 400 });
-      return a;
-    }
     const slash = model.indexOf("/");
     if (slash > 0) {
       const prefix = model.slice(0, slash);
       const a = this.adapters.get(prefix);
       if (a) return a;
+    }
+    if (preferredAdapter) {
+      const a = this.adapters.get(preferredAdapter);
+      if (!a) throw Object.assign(new Error(`Unknown adapter: ${preferredAdapter}`), { status: 400 });
+      return a;
     }
     const fallback = this.adapters.get(this.defaultAdapterId);
     if (!fallback) throw Object.assign(new Error("No default adapter registered"), { status: 500 });
