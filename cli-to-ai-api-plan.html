@@ -721,10 +721,10 @@ npm run bench</code></pre>
 
       <h3>Adapter interface (sketch)</h3>
       <pre><code><span class="key">type</span> ChatEvent =
-  | { type: <span class="str">"delta"</span>; text: <span class="str">string</span> }
+  | { type: <span class="str">"delta"</span>; text: <span class="str">string</span>; channel?: <span class="str">"content"</span> | <span class="str">"reasoning"</span> }
   | { type: <span class="str">"tool.started"</span>; name: <span class="str">string</span>; id?: <span class="str">string</span> }   <span class="cmt">// keep even if OpenAI tools deferred</span>
   | { type: <span class="str">"tool.completed"</span>; name: <span class="str">string</span>; id?: <span class="str">string</span> }
-  | { type: <span class="str">"done"</span>; finishReason: <span class="str">string</span> }
+  | { type: <span class="str">"done"</span>; finishReason: <span class="str">"stop"</span> | <span class="str">"length"</span> | <span class="str">"error"</span>; usage?: <span class="str">Usage</span> }
   | { type: <span class="str">"error"</span>; message: <span class="str">string</span>; code?: <span class="str">string</span> }
 
 <span class="key">interface</span> Adapter {

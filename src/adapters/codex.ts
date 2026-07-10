@@ -47,11 +47,15 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
       reject(Object.assign(new Error("Aborted"), { code: "ABORT_ERR" }));
       return;
     }
-    const timer = setTimeout(resolve, ms);
+    let timer: ReturnType<typeof setTimeout>;
     const onAbort = () => {
       clearTimeout(timer);
       reject(Object.assign(new Error("Aborted"), { code: "ABORT_ERR" }));
     };
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
@@ -330,7 +334,7 @@ function buildExecArgs(
   if (typeof rawEffort === "string" && rawEffort.trim() && rawEffort.trim() !== "none") {
     args.push("-c", `model_reasoning_effort=${rawEffort.trim().toLowerCase()}`);
   }
-  if (opts.cwd) args.push("-C", opts.cwd);
+  // cwd is applied via spawn options only — do not also pass -C (double-resolves relative paths).
   if (req.modelLocal && req.modelLocal !== "default") {
     args.push("-m", req.modelLocal);
   }
@@ -378,7 +382,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
       const effectiveWordDelay = req.stream ? wordDelay : 0;
 
       let sawContent = false;
-      let sawDone = false;
+      let pendingDone: (ChatEvent & { type: "done" }) | null = null;
       let exitCode: number | null = null;
       let timedOut = false;
       let stderr = "";
@@ -423,8 +427,8 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
                 if (ev.type === "error") return;
               }
             } else if (parsed.kind === "done" && parsed.done) {
-              sawDone = true;
-              yield parsed.done;
+              // Buffer until exit validation — nonzero exit must not look like success.
+              pendingDone = parsed.done;
             } else if (parsed.kind === "error" && parsed.error) {
               yield parsed.error;
               return;
@@ -451,7 +455,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
         return;
       }
 
-      if (exitCode !== 0 && !sawDone) {
+      if (exitCode !== 0) {
         const detail = stderr.trim().slice(0, 2000);
         yield {
           type: "error",
@@ -470,9 +474,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
         return;
       }
 
-      if (!sawDone) {
-        yield { type: "done", finishReason: "stop" };
-      }
+      yield pendingDone ?? { type: "done", finishReason: "stop" };
     },
 
     async health(): Promise<HealthStatus> {

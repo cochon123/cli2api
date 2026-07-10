@@ -1,5 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 
+/** Soft cap on queued stdout/stderr bytes before pausing child streams. */
+const MAX_QUEUED_BYTES = 1_048_576;
+/** Keep only the trailing stderr for exit diagnostics. */
+const MAX_STDERR_BYTES = 65_536;
+
 export interface RunCommandOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
@@ -26,6 +31,22 @@ interface SpawnedChild {
   dispose: () => void;
 }
 
+function terminateChild(child: ChildProcessWithoutNullStreams): void {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  child.kill("SIGTERM");
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+    }
+  }, 2_000).unref();
+}
+
+function appendCapped(buf: string, chunk: string, maxBytes: number): string {
+  const next = buf + chunk;
+  if (next.length <= maxBytes) return next;
+  return next.slice(next.length - maxBytes);
+}
+
 function spawnChild(
   command: string,
   args: string[],
@@ -40,6 +61,7 @@ function spawnChild(
   const child = spawn(command, args, {
     cwd,
     // TODO(P1): scrub parent env — today children inherit the full process.env.
+    // Tracked in README; needs an allowlist + pass-through config before shipping.
     env: { ...process.env, ...env },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -49,14 +71,12 @@ function spawnChild(
     timeoutMs > 0
       ? setTimeout(() => {
           timedOut = true;
-          child.kill("SIGTERM");
-          setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+          terminateChild(child);
         }, timeoutMs)
       : undefined;
 
   const onAbort = () => {
-    child.kill("SIGTERM");
-    setTimeout(() => child.kill("SIGKILL"), 2_000).unref();
+    terminateChild(child);
   };
   signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -138,14 +158,38 @@ export async function* runCommandLines(
 
   const { child, timedOut, dispose } = spawned;
   const queue: CommandLineEvent[] = [];
+  let queuedBytes = 0;
+  let streamsPaused = false;
   let wait: (() => void) | null = null;
   let done = false;
   let error: Error | null = null;
   let stderr = "";
   let stdoutBuf = "";
 
+  const eventBytes = (ev: CommandLineEvent): number => {
+    if (ev.type === "stdout_line") return ev.line.length;
+    if (ev.type === "stderr") return ev.data.length;
+    return ev.stderr.length;
+  };
+
+  const maybePause = () => {
+    if (streamsPaused || queuedBytes < MAX_QUEUED_BYTES) return;
+    streamsPaused = true;
+    child.stdout.pause();
+    child.stderr.pause();
+  };
+
+  const maybeResume = () => {
+    if (!streamsPaused || queuedBytes >= MAX_QUEUED_BYTES / 2) return;
+    streamsPaused = false;
+    child.stdout.resume();
+    child.stderr.resume();
+  };
+
   const push = (ev: CommandLineEvent) => {
     queue.push(ev);
+    queuedBytes += eventBytes(ev);
+    maybePause();
     if (wait) {
       const w = wait;
       wait = null;
@@ -165,7 +209,7 @@ export async function* runCommandLines(
   });
 
   child.stderr.on("data", (chunk: string) => {
-    stderr += chunk;
+    stderr = appendCapped(stderr, chunk, MAX_STDERR_BYTES);
     push({ type: "stderr", data: chunk });
   });
 
@@ -205,6 +249,8 @@ export async function* runCommandLines(
         continue;
       }
       const ev = queue.shift()!;
+      queuedBytes = Math.max(0, queuedBytes - eventBytes(ev));
+      maybeResume();
       yield ev;
       if (ev.type === "exit") return;
     }
@@ -212,9 +258,7 @@ export async function* runCommandLines(
   } finally {
     dispose();
     // Consumer abandoned the iterator (e.g. client disconnect) — stop the CLI.
-    if (child.exitCode === null && child.signalCode === null) {
-      child.kill("SIGTERM");
-    }
+    terminateChild(child);
   }
 }
 
