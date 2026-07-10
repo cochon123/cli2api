@@ -28,8 +28,10 @@ export function collectChatText(events: AsyncIterable<ChatEvent>): Promise<{
     let error: string | undefined;
 
     for await (const ev of events) {
-      if (ev.type === "delta") text += ev.text;
-      else if (ev.type === "done") {
+      if (ev.type === "delta") {
+        // Non-stream collectors only keep assistant content, not reasoning.
+        if ((ev.channel ?? "content") === "content") text += ev.text;
+      } else if (ev.type === "done") {
         finishReason = ev.finishReason;
         usage = ev.usage;
       } else if (ev.type === "error") {

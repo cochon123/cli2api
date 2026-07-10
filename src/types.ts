@@ -56,7 +56,14 @@ export interface ChatCompletionChunk {
   model: string;
   choices: Array<{
     index: number;
-    delta: { role?: "assistant"; content?: string };
+    delta: {
+      role?: "assistant";
+      content?: string;
+      /** OpenRouter-style reasoning stream */
+      reasoning?: string;
+      /** Alternate field some OpenAI-compatible clients expect */
+      reasoning_content?: string;
+    };
     finish_reason: "stop" | "length" | "error" | null;
   }>;
 }
@@ -81,8 +88,10 @@ export interface NormalizedChatRequest {
   raw: ChatCompletionRequest;
 }
 
+export type DeltaChannel = "content" | "reasoning";
+
 export type ChatEvent =
-  | { type: "delta"; text: string }
+  | { type: "delta"; text: string; channel?: DeltaChannel }
   | { type: "done"; finishReason: "stop" | "length" | "error"; usage?: ChatCompletionResponse["usage"] }
   | { type: "error"; message: string; code?: string };
 

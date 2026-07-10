@@ -7,9 +7,18 @@ import type {
   NormalizedChatRequest,
 } from "../types.js";
 import { messagesToPrompt } from "../protocol/openai.js";
-import { runCommand, which } from "../util/process.js";
+import { runCommand, runCommandLines, which } from "../util/process.js";
 
-const DEFAULT_MODELS = ["default", "gpt-5.1-codex", "o3", "o4-mini"];
+const DEFAULT_MODELS = [
+  "default",
+  "gpt-5.6-terra",
+  "gpt-5.1-codex",
+  "o3",
+  "o4-mini",
+];
+
+/** Delay between fake-streamed content words (ms). */
+const CONTENT_WORD_DELAY_MS = 28;
 
 export interface CodexAdapterOptions {
   /** Binary name or path (default: codex) */
@@ -27,62 +36,311 @@ export interface CodexAdapterOptions {
   sandbox?: "read-only" | "workspace-write" | "danger-full-access";
   /** Skip git repo check (needed outside of git repos) */
   skipGitRepoCheck?: boolean;
+  /** Word-by-word delay for content fake-stream (ms). 0 = instant chunks. */
+  contentWordDelayMs?: number;
 }
 
-function parseCodexJsonl(stdout: string): string {
-  const lines = stdout.split(/\r?\n/).filter((l) => l.trim());
-  let lastMessage = "";
-  let agentMessages: string[] = [];
-
-  for (const line of lines) {
-    let obj: unknown;
-    try {
-      obj = JSON.parse(line);
-    } catch {
-      continue;
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(Object.assign(new Error("Aborted"), { code: "ABORT_ERR" }));
+      return;
     }
-    if (!obj || typeof obj !== "object") continue;
-    const rec = obj as Record<string, unknown>;
-    const type = typeof rec.type === "string" ? rec.type : "";
+    let timer: ReturnType<typeof setTimeout>;
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(Object.assign(new Error("Aborted"), { code: "ABORT_ERR" }));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
-    // Codex JSONL event shapes vary by version; collect common ones.
-    if (type === "item.completed" || type === "agent_message" || type === "message") {
-      const item = (rec.item ?? rec) as Record<string, unknown>;
-      const text =
-        (typeof item.text === "string" && item.text) ||
-        (typeof item.content === "string" && item.content) ||
-        (typeof rec.text === "string" && rec.text) ||
-        "";
-      if (text) agentMessages.push(text);
+/** Yield text word-by-word so SSE clients see a typing effect. */
+export async function* fakeStreamWords(
+  text: string,
+  delayMs: number,
+  signal?: AbortSignal,
+  channel: "content" | "reasoning" = "content",
+): AsyncGenerator<ChatEvent> {
+  const parts = text.match(/\S+\s*|\s+/g) ?? [text];
+  for (const part of parts) {
+    if (signal?.aborted) {
+      yield { type: "error", message: "Aborted", code: "abort" };
+      return;
     }
-
-    if (type === "agent_message" && typeof rec.message === "string") {
-      agentMessages.push(rec.message);
-    }
-
-    // Nested: { type: "...", item: { type: "agent_message", text: "..." } }
-    if (rec.item && typeof rec.item === "object") {
-      const item = rec.item as Record<string, unknown>;
-      if (item.type === "agent_message" && typeof item.text === "string") {
-        agentMessages.push(item.text);
+    if (!part) continue;
+    yield { type: "delta", text: part, channel };
+    if (delayMs > 0) {
+      try {
+        await sleep(delayMs, signal);
+      } catch {
+        yield { type: "error", message: "Aborted", code: "abort" };
+        return;
       }
-      if (typeof item.text === "string" && (item.type === "message" || !item.type)) {
-        agentMessages.push(item.text);
-      }
     }
+  }
+}
 
-    if (typeof rec.last_agent_message === "string") {
-      lastMessage = rec.last_agent_message;
+function itemTypeOf(item: Record<string, unknown>): string {
+  return typeof item.type === "string" ? item.type : "";
+}
+
+/** Extract assistant-facing text from a Codex JSONL item, if any. */
+function agentMessageText(item: Record<string, unknown>): string | null {
+  const itemType = itemTypeOf(item);
+  // Current schema uses agent_message; older experimental-json used assistant_message.
+  if (itemType !== "agent_message" && itemType !== "assistant_message" && itemType !== "message") {
+    return null;
+  }
+  if (typeof item.text === "string" && item.text) return item.text;
+  if (typeof item.content === "string" && item.content) return item.content;
+  if (typeof item.message === "string" && item.message) return item.message;
+  return null;
+}
+
+function reasoningText(item: Record<string, unknown>): string | null {
+  if (itemTypeOf(item) !== "reasoning") return null;
+  let text = "";
+  if (typeof item.text === "string" && item.text) text = item.text;
+  else if (typeof item.content === "string" && item.content) text = item.content;
+  if (!text) return null;
+  // Codex sometimes appends empty HTML comment markers in summary text.
+  return text.replace(/<!--\s*-->/g, "").trim() || null;
+}
+
+/** Short human-readable breadcrumb for non-message Codex items (reasoning channel). */
+function activityBreadcrumb(
+  eventType: string,
+  item: Record<string, unknown> | null,
+): string | null {
+  if (eventType === "thread.started") return "thread started\n";
+  if (eventType === "turn.started") return "turn started\n";
+  if (!item) return null;
+
+  const itemType = itemTypeOf(item);
+  if (itemType === "command_execution") {
+    const cmd = typeof item.command === "string" ? item.command : "";
+    const status = typeof item.status === "string" ? item.status : "";
+    if (eventType === "item.started") {
+      return cmd ? `running: ${cmd.slice(0, 120)}\n` : "command started\n";
+    }
+    if (eventType === "item.completed") {
+      const code = typeof item.exit_code === "number" ? ` (exit ${item.exit_code})` : "";
+      return cmd ? `done: ${cmd.slice(0, 80)}${code}\n` : `command ${status || "completed"}${code}\n`;
+    }
+  }
+  if (itemType === "file_change" && eventType === "item.completed") {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+    const n = changes.length;
+    return n ? `file changes: ${n}\n` : "file change\n";
+  }
+  if (itemType === "mcp_tool_call") {
+    const tool = typeof item.tool === "string" ? item.tool : "tool";
+    const server = typeof item.server === "string" ? item.server : "";
+    const label = server ? `${server}/${tool}` : tool;
+    if (eventType === "item.started") return `mcp: ${label}\n`;
+    if (eventType === "item.completed") return `mcp done: ${label}\n`;
+  }
+  if (itemType === "web_search" && eventType === "item.completed") {
+    const q = typeof item.query === "string" ? item.query : "";
+    return q ? `web search: ${q.slice(0, 100)}\n` : "web search\n";
+  }
+  if (itemType === "todo_list" && (eventType === "item.started" || eventType === "item.updated")) {
+    return "plan updated\n";
+  }
+  if (itemType === "error") {
+    const msg = typeof item.message === "string" ? item.message : "error item";
+    return `${msg}\n`;
+  }
+  return null;
+}
+
+export type CodexLineKind = "content" | "reasoning" | "done" | "error" | "ignore";
+
+export interface CodexParsedLine {
+  kind: CodexLineKind;
+  text?: string;
+  /** True for model reasoning summaries (fake-stream); false for short status crumbs. */
+  fakeStream?: boolean;
+  error?: ChatEvent & { type: "error" };
+  done?: ChatEvent & { type: "done" };
+}
+
+/**
+ * Parse one Codex JSONL line into a typed payload.
+ * Content (agent_message) is returned whole — caller fake-streams words.
+ * Everything else useful goes to reasoning.
+ */
+export function parseCodexLine(line: string): CodexParsedLine {
+  const trimmed = line.trim();
+  if (!trimmed) return { kind: "ignore" };
+
+  let obj: unknown;
+  try {
+    obj = JSON.parse(trimmed);
+  } catch {
+    if (!trimmed.startsWith("{")) return { kind: "content", text: trimmed };
+    return { kind: "ignore" };
+  }
+  if (!obj || typeof obj !== "object") return { kind: "ignore" };
+
+  const rec = obj as Record<string, unknown>;
+  const type = typeof rec.type === "string" ? rec.type : "";
+
+  if (type === "error") {
+    let message = "codex stream error";
+    if (typeof rec.message === "string" && rec.message) {
+      message = rec.message;
+    } else if (rec.error && typeof rec.error === "object") {
+      const nested = (rec.error as Record<string, unknown>).message;
+      if (typeof nested === "string" && nested) message = nested;
+    }
+    if (/^Reconnecting\.\.\./i.test(message)) return { kind: "ignore" };
+    return { kind: "error", error: { type: "error", message, code: "cli_error" } };
+  }
+
+  if (type === "turn.failed") {
+    let message = "codex turn failed";
+    if (rec.error && typeof rec.error === "object") {
+      const nested = (rec.error as Record<string, unknown>).message;
+      if (typeof nested === "string" && nested) message = nested;
+    }
+    return { kind: "error", error: { type: "error", message, code: "turn_failed" } };
+  }
+
+  if (type === "turn.completed") {
+    const usageRaw = rec.usage;
+    let usage: { prompt_tokens: number; completion_tokens: number; total_tokens: number } | undefined;
+    if (usageRaw && typeof usageRaw === "object") {
+      const u = usageRaw as Record<string, unknown>;
+      const prompt = typeof u.input_tokens === "number" ? u.input_tokens : 0;
+      const completion = typeof u.output_tokens === "number" ? u.output_tokens : 0;
+      usage = {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: prompt + completion,
+      };
+    }
+    return { kind: "done", done: { type: "done", finishReason: "stop", usage } };
+  }
+
+  const item =
+    rec.item && typeof rec.item === "object" ? (rec.item as Record<string, unknown>) : null;
+
+  // Lifecycle breadcrumbs
+  if (type === "thread.started" || type === "turn.started") {
+    const crumb = activityBreadcrumb(type, null);
+    return crumb ? { kind: "reasoning", text: crumb } : { kind: "ignore" };
+  }
+
+  if (type === "item.started" || type === "item.updated" || type === "item.completed") {
+    if (item) {
+      const agent = agentMessageText(item);
+      if (agent && type === "item.completed") {
+        return { kind: "content", text: agent };
+      }
+      const reason = reasoningText(item);
+      if (reason && (type === "item.completed" || type === "item.updated")) {
+        const text = reason.endsWith("\n") ? reason : `${reason}\n`;
+        return { kind: "reasoning", text, fakeStream: true };
+      }
+      const crumb = activityBreadcrumb(type, item);
+      if (crumb) return { kind: "reasoning", text: crumb, fakeStream: false };
+    }
+    return { kind: "ignore" };
+  }
+
+  if (type === "agent_message" || type === "message") {
+    const src = item ?? rec;
+    const text = agentMessageText(src);
+    if (text) return { kind: "content", text };
+    if (typeof rec.message === "string" && rec.message) {
+      return { kind: "content", text: rec.message };
     }
   }
 
-  if (lastMessage) return lastMessage.trim();
-  if (agentMessages.length) return agentMessages[agentMessages.length - 1].trim();
+  return { kind: "ignore" };
+}
 
-  // Fallback: if no JSON parsed, use raw stdout (non --json runs)
+/**
+ * Map one Codex JSONL event to ChatEvents (content returned as a single delta;
+ * prefer parseCodexLine + fakeStreamWords in the live adapter path).
+ */
+export function chatEventsFromCodexLine(line: string): ChatEvent[] {
+  const parsed = parseCodexLine(line);
+  if (parsed.kind === "content" && parsed.text) {
+    return [{ type: "delta", text: parsed.text, channel: "content" }];
+  }
+  if (parsed.kind === "reasoning" && parsed.text) {
+    return [{ type: "delta", text: parsed.text, channel: "reasoning" }];
+  }
+  if (parsed.kind === "done" && parsed.done) return [parsed.done];
+  if (parsed.kind === "error" && parsed.error) return [parsed.error];
+  return [];
+}
+
+/** Batch helper kept for tests / non-streaming inspection. */
+export function parseCodexJsonl(stdout: string): string {
+  const lines = stdout.split(/\r?\n/);
+  let text = "";
+  let lastMessage = "";
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const obj = JSON.parse(trimmed) as Record<string, unknown>;
+      if (typeof obj.last_agent_message === "string") {
+        lastMessage = obj.last_agent_message;
+      }
+    } catch {
+      // ignore
+    }
+    for (const ev of chatEventsFromCodexLine(line)) {
+      if (ev.type === "delta" && (ev.channel ?? "content") === "content") text += ev.text;
+    }
+  }
+  if (lastMessage) return lastMessage.trim();
+  if (text) return text.trim();
   const trimmed = stdout.trim();
   if (trimmed && !trimmed.startsWith("{")) return trimmed;
   return trimmed;
+}
+
+function buildExecArgs(
+  opts: CodexAdapterOptions,
+  req: NormalizedChatRequest,
+  sandbox: string,
+  skipGitRepoCheck: boolean,
+  prompt: string,
+): string[] {
+  const args = ["exec", "--json", "-s", sandbox];
+  if (skipGitRepoCheck) args.push("--skip-git-repo-check");
+  // Surface reasoning *summaries* on the JSONL stream (effort alone is not enough).
+  args.push(
+    "-c",
+    "model_reasoning_summary=detailed",
+    "-c",
+    "model_supports_reasoning_summaries=true",
+    "-c",
+    "hide_agent_reasoning=false",
+  );
+  // Optional effort override from OpenAI-shaped request body.
+  const rawEffort = req.raw?.reasoning_effort ?? req.raw?.reasoningEffort;
+  if (typeof rawEffort === "string" && rawEffort.trim() && rawEffort.trim() !== "none") {
+    args.push("-c", `model_reasoning_effort=${rawEffort.trim().toLowerCase()}`);
+  }
+  // cwd is applied via spawn options only — do not also pass -C (double-resolves relative paths).
+  if (req.modelLocal && req.modelLocal !== "default") {
+    args.push("-m", req.modelLocal);
+  }
+  if (opts.extraArgs?.length) args.push(...opts.extraArgs);
+  args.push(prompt);
+  return args;
 }
 
 export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
@@ -90,6 +348,8 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
   const timeoutMs = opts.timeoutMs ?? 180_000;
   const sandbox = opts.sandbox ?? "read-only";
   const skipGitRepoCheck = opts.skipGitRepoCheck ?? true;
+  const wordDelay =
+    typeof opts.contentWordDelayMs === "number" ? opts.contentWordDelayMs : CONTENT_WORD_DELAY_MS;
 
   return {
     id: "codex",
@@ -117,30 +377,75 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
       }
 
       const prompt = messagesToPrompt(req.messages);
-      const args = ["exec", "--json", "-s", sandbox];
-      if (skipGitRepoCheck) args.push("--skip-git-repo-check");
-      if (opts.cwd) args.push("-C", opts.cwd);
-      if (req.modelLocal && req.modelLocal !== "default") {
-        args.push("-m", req.modelLocal);
-      }
-      if (opts.extraArgs?.length) args.push(...opts.extraArgs);
-      // Prompt as positional; also support stdin via "-"
-      args.push(prompt);
+      const args = buildExecArgs(opts, req, sandbox, skipGitRepoCheck, prompt);
+      // Fake-stream delays are only for SSE typing effect — skip for non-stream collectors.
+      const effectiveWordDelay = req.stream ? wordDelay : 0;
 
-      let result;
+      let sawContent = false;
+      let pendingDone: (ChatEvent & { type: "done" }) | null = null;
+      let exitCode: number | null = null;
+      let timedOut = false;
+      let stderr = "";
+
       try {
-        result = await runCommand(path, args, {
+        for await (const pev of runCommandLines(path, args, {
           cwd: opts.cwd,
           timeoutMs,
           signal,
-        });
+        })) {
+          if (signal.aborted) {
+            yield { type: "error", message: "Aborted", code: "abort" };
+            return;
+          }
+
+          if (pev.type === "stdout_line") {
+            const parsed = parseCodexLine(pev.line);
+            if (parsed.kind === "reasoning" && parsed.text) {
+              if (parsed.fakeStream) {
+                for await (const ev of fakeStreamWords(
+                  parsed.text,
+                  effectiveWordDelay,
+                  signal,
+                  "reasoning",
+                )) {
+                  yield ev;
+                  if (ev.type === "error") return;
+                }
+              } else {
+                yield { type: "delta", text: parsed.text, channel: "reasoning" };
+              }
+            } else if (parsed.kind === "content" && parsed.text) {
+              sawContent = true;
+              // Fake-stream the whole agent message word-by-word.
+              for await (const ev of fakeStreamWords(
+                parsed.text,
+                effectiveWordDelay,
+                signal,
+                "content",
+              )) {
+                yield ev;
+                if (ev.type === "error") return;
+              }
+            } else if (parsed.kind === "done" && parsed.done) {
+              // Buffer until exit validation — nonzero exit must not look like success.
+              pendingDone = parsed.done;
+            } else if (parsed.kind === "error" && parsed.error) {
+              yield parsed.error;
+              return;
+            }
+          } else if (pev.type === "exit") {
+            exitCode = pev.code;
+            timedOut = pev.timedOut;
+            stderr = pev.stderr;
+          }
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         yield { type: "error", message: `Failed to spawn codex: ${message}`, code: "spawn_error" };
         return;
       }
 
-      if (result.timedOut) {
+      if (timedOut) {
         yield { type: "error", message: `codex timed out after ${timeoutMs}ms`, code: "timeout" };
         return;
       }
@@ -150,36 +455,26 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
         return;
       }
 
-      if (result.code !== 0) {
-        const detail = (result.stderr || result.stdout || "").trim().slice(0, 2000);
+      if (exitCode !== 0) {
+        const detail = stderr.trim().slice(0, 2000);
         yield {
           type: "error",
-          message: `codex exited with code ${result.code}${detail ? `: ${detail}` : ""}`,
+          message: `codex exited with code ${exitCode}${detail ? `: ${detail}` : ""}`,
           code: "cli_error",
         };
         return;
       }
 
-      const text = parseCodexJsonl(result.stdout) || result.stdout.trim();
-      if (!text) {
+      if (!sawContent) {
         yield {
           type: "error",
-          message: `codex returned empty output. stderr: ${(result.stderr || "").trim().slice(0, 1000)}`,
+          message: `codex returned empty output. stderr: ${stderr.trim().slice(0, 1000)}`,
           code: "empty_output",
         };
         return;
       }
 
-      // Fake-stream final answer so SSE clients work
-      const chunkSize = 48;
-      for (let i = 0; i < text.length; i += chunkSize) {
-        if (signal.aborted) {
-          yield { type: "error", message: "Aborted", code: "abort" };
-          return;
-        }
-        yield { type: "delta", text: text.slice(i, i + chunkSize) };
-      }
-      yield { type: "done", finishReason: "stop" };
+      yield pendingDone ?? { type: "done", finishReason: "stop" };
     },
 
     async health(): Promise<HealthStatus> {

@@ -126,11 +126,24 @@ export function createApp(opts: ServerOptions): Hono {
         try {
           for await (const ev of adapter.chat(req, ac.signal)) {
             if (ev.type === "delta") {
-              await stream.writeSSE({
-                data: JSON.stringify(
-                  buildChunk({ id, model: req.model, delta: { content: ev.text } }),
-                ),
-              });
+              const channel = ev.channel ?? "content";
+              if (channel === "reasoning") {
+                await stream.writeSSE({
+                  data: JSON.stringify(
+                    buildChunk({
+                      id,
+                      model: req.model,
+                      delta: { reasoning: ev.text, reasoning_content: ev.text },
+                    }),
+                  ),
+                });
+              } else {
+                await stream.writeSSE({
+                  data: JSON.stringify(
+                    buildChunk({ id, model: req.model, delta: { content: ev.text } }),
+                  ),
+                });
+              }
             } else if (ev.type === "error") {
               await stream.writeSSE({
                 data: JSON.stringify({
