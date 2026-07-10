@@ -1,0 +1,43 @@
+{
+  "name": "cli2api",
+  "version": "0.1.0",
+  "description": "Local OpenAI-compatible gateway for coding CLIs (Codex, OpenCode, …)",
+  "type": "module",
+  "bin": {
+    "cli2api": "./dist/index.js"
+  },
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc && node scripts/postbuild.mjs",
+    "start": "node dist/index.js",
+    "serve": "tsx src/index.ts serve",
+    "doctor": "tsx src/index.ts doctor",
+    "models": "tsx src/index.ts models",
+    "completion": "tsx src/index.ts completion",
+    "adapters": "tsx src/index.ts adapters",
+    "test:smoke": "tsx scripts/smoke.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "openai",
+    "cli",
+    "codex",
+    "local",
+    "llm-gateway"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@hono/node-server": "^1.14.4",
+    "commander": "^14.0.0",
+    "hono": "^4.8.3",
+    "zod": "^3.25.67"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "tsx": "^4.20.3",
+    "typescript": "^5.8.3"
+  }
+}
