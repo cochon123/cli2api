@@ -1,0 +1,983 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>cli2api — Turn your coding CLI into an OpenAI API</title>
+  <meta name="description" content="Local OpenAI- and OpenRouter-compatible gateway for Codex, OpenCode, Cursor Agent, and Claude Code. One env swap. Localhost only." />
+  <meta property="og:title" content="cli2api" />
+  <meta property="og:description" content="Point any OpenAI SDK at localhost and run against the coding CLI you already use." />
+  <meta property="og:type" content="website" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,500;6..72,600;6..72,700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0a0c0b;
+      --bg-elev: #141816;
+      --bg-soft: #1a1f1c;
+      --ink: #f2f5f2;
+      --muted: #8b968e;
+      --faint: #5a655e;
+      --line: #262c28;
+      --accent: #c4f542;
+      --accent-dim: rgba(196, 245, 66, 0.12);
+      --ok: #5ddea8;
+      --serif: "Newsreader", Georgia, serif;
+      --sans: "DM Sans", system-ui, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+      --max: 1100px;
+      --ease: cubic-bezier(0.22, 1, 0.36, 1);
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--sans);
+      color: var(--ink);
+      background: var(--bg);
+      line-height: 1.55;
+      font-size: 16px;
+      overflow-x: hidden;
+    }
+
+    a { color: inherit; text-decoration: none; }
+
+    .atmosphere {
+      position: fixed;
+      inset: 0;
+      z-index: -1;
+      pointer-events: none;
+      background: var(--bg);
+    }
+
+    .atmosphere::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.035) 1px, transparent 1px);
+      background-size: 72px 72px;
+      mask-image: radial-gradient(ellipse 90% 70% at 50% 30%, black 10%, transparent 72%);
+    }
+
+    .wrap {
+      width: min(100% - 2.5rem, var(--max));
+      margin-inline: auto;
+    }
+
+    /* —— Top bar —— */
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.35rem 0;
+      position: relative;
+      z-index: 5;
+    }
+
+    .brand {
+      font-family: var(--sans);
+      font-weight: 600;
+      font-size: 1.05rem;
+      letter-spacing: -0.03em;
+      color: var(--ink);
+    }
+
+    .brand span { color: var(--accent); }
+
+    .star-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.4rem 0.75rem;
+      border-radius: 999px;
+      border: 1px solid #3d3420;
+      background: #14120e;
+      color: #e8c56a;
+      font-size: 0.8rem;
+      font-weight: 500;
+      transition: border-color 0.2s, background 0.2s;
+    }
+
+    .star-badge:hover {
+      border-color: #5a4a28;
+      background: #1a1710;
+    }
+
+    .star-badge svg {
+      width: 13px;
+      height: 13px;
+      fill: #e8c56a;
+    }
+
+    /* —— Hero —— */
+    .hero {
+      position: relative;
+      min-height: calc(100svh - 4.75rem);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding-top: clamp(2.5rem, 8vh, 5.5rem);
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background: radial-gradient(700px 420px at 50% 18%, rgba(196, 245, 66, 0.07), transparent 62%);
+    }
+
+    .hero-stage {
+      position: relative;
+      width: min(100%, 52rem);
+      text-align: center;
+      z-index: 2;
+      opacity: 0;
+      transform: translateY(16px);
+      animation: rise 0.85s var(--ease) 0.05s forwards;
+    }
+
+    .brand-hero {
+      font-family: var(--serif);
+      font-weight: 700;
+      font-size: clamp(1.15rem, 2.4vw, 1.35rem);
+      letter-spacing: -0.03em;
+      color: var(--ink);
+      margin-bottom: 1.1rem;
+    }
+
+    .brand-hero em {
+      font-style: normal;
+      color: var(--accent);
+    }
+
+    .headline {
+      font-family: var(--sans);
+      font-weight: 700;
+      font-size: clamp(2rem, 5.2vw, 3.35rem);
+      line-height: 1.08;
+      letter-spacing: -0.045em;
+      color: var(--ink);
+      max-width: 14ch;
+      margin: 0 auto 1.15rem;
+    }
+
+    .lede {
+      color: var(--muted);
+      font-size: clamp(0.98rem, 1.6vw, 1.12rem);
+      line-height: 1.55;
+      max-width: 38rem;
+      margin: 0 auto 1.85rem;
+    }
+
+    .cta-stack {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .install-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.75rem;
+      padding: 0.7rem 0.75rem 0.7rem 1.05rem;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #121512;
+      font-family: var(--mono);
+      font-size: 0.88rem;
+      color: var(--ink);
+      max-width: 100%;
+    }
+
+    .install-chip code {
+      font: inherit;
+      white-space: nowrap;
+      overflow-x: auto;
+    }
+
+    .install-chip .prompt {
+      color: var(--accent);
+      margin-right: 0.35rem;
+    }
+
+    .copy-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 2rem;
+      height: 2rem;
+      border-radius: 7px;
+      border: 1px solid var(--line);
+      background: var(--bg-elev);
+      color: var(--muted);
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+
+    .copy-btn:hover {
+      color: var(--ink);
+      border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+      background: var(--accent-dim);
+    }
+
+    .copy-btn.copied {
+      color: var(--accent);
+      border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+    }
+
+    .copy-btn svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .copy-btn .icon-done {
+      display: none;
+    }
+
+    .copy-btn.copied .icon-copy {
+      display: none;
+    }
+
+    .copy-btn.copied .icon-done {
+      display: block;
+    }
+
+    .ghost-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.45rem;
+      color: var(--ink);
+      font-size: 0.9rem;
+      font-weight: 500;
+      opacity: 0.85;
+      transition: opacity 0.2s;
+    }
+
+    .ghost-link:hover { opacity: 1; }
+
+    .ghost-link svg {
+      width: 15px;
+      height: 15px;
+      fill: currentColor;
+    }
+
+    .ghost-link .arrow {
+      width: 12px;
+      height: 12px;
+      stroke: currentColor;
+      fill: none;
+      stroke-width: 1.8;
+    }
+
+    /* Product preview rising from bottom */
+    .hero-preview {
+      position: relative;
+      z-index: 2;
+      width: min(100vw - 1.5rem, 820px);
+      margin-top: clamp(2.75rem, 7vh, 4.5rem);
+      margin-bottom: 0;
+      max-height: min(44vh, 360px);
+      overflow: hidden;
+      opacity: 0;
+      transform: translateY(36px);
+      animation: rise 1s var(--ease) 0.25s forwards;
+      mask-image: linear-gradient(180deg, black 62%, transparent 100%);
+      -webkit-mask-image: linear-gradient(180deg, black 62%, transparent 100%);
+    }
+
+    .preview-window {
+      background: #0c0e0d;
+      border: 1px solid #2a2f2c;
+      border-radius: 10px 10px 0 0;
+      border-bottom: 0;
+      overflow: hidden;
+      box-shadow: 0 40px 80px -30px rgba(0, 0, 0, 0.7);
+    }
+
+    .preview-chrome {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 38px;
+      padding: 0 12px;
+      background: #1a1d1b;
+      border-bottom: 1px solid #2a2f2c;
+    }
+
+    .traffic {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      translate: 0 -50%;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .dot {
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.25);
+    }
+
+    .dot.r { background: #ff5f57; }
+    .dot.y { background: #febc2e; }
+    .dot.g { background: #28c840; }
+
+    .preview-title {
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      color: #8a938c;
+      letter-spacing: -0.01em;
+      user-select: none;
+    }
+
+    .preview-main {
+      padding: 1.15rem 1.25rem 1.6rem;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      line-height: 1.65;
+      color: var(--muted);
+    }
+
+    .term-line {
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .term-line + .term-line {
+      margin-top: 0.05rem;
+    }
+
+    .prompt { color: var(--accent); }
+    .cmd { color: var(--ink); }
+    .out { color: var(--faint); }
+    .hl { color: var(--ok); }
+    .dim { color: var(--faint); }
+
+    .cursor {
+      display: inline-block;
+      width: 0.6ch;
+      height: 1.05em;
+      background: var(--accent);
+      vertical-align: text-bottom;
+      margin-left: 1px;
+      animation: blink 1.05s steps(1) infinite;
+    }
+
+    .cursor.hidden { display: none; }
+
+    .anim-value { color: var(--ok); }
+    .anim-value.cloud { color: #9aa8a0; }
+    .anim-value.local { color: var(--ok); }
+
+    .env-block {
+      margin-top: 0.85rem;
+      padding-top: 0.85rem;
+      border-top: 1px solid var(--line);
+    }
+
+    /* —— Sections —— */
+    section {
+      padding: 5rem 0;
+      border-top: 1px solid var(--line);
+    }
+
+    .section-label {
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 0.85rem;
+    }
+
+    .section-title {
+      font-family: var(--serif);
+      font-weight: 600;
+      font-size: clamp(1.7rem, 3.5vw, 2.35rem);
+      line-height: 1.15;
+      letter-spacing: -0.025em;
+      margin-bottom: 0.75rem;
+      max-width: 16ch;
+    }
+
+    .section-copy {
+      color: var(--muted);
+      max-width: 38rem;
+      font-size: 1.05rem;
+      margin-bottom: 2rem;
+    }
+
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.7s var(--ease), transform 0.7s var(--ease);
+    }
+
+    .reveal.in {
+      opacity: 1;
+      transform: none;
+    }
+
+    .steps {
+      display: grid;
+      gap: 1.25rem;
+      counter-reset: step;
+    }
+
+    @media (min-width: 720px) {
+      .steps { grid-template-columns: repeat(3, 1fr); gap: 1.5rem; }
+    }
+
+    .step::before {
+      counter-increment: step;
+      content: "0" counter(step);
+      display: block;
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      color: var(--accent);
+      margin-bottom: 0.7rem;
+      letter-spacing: 0.06em;
+    }
+
+    .step h3 {
+      font-family: var(--serif);
+      font-weight: 600;
+      font-size: 1.2rem;
+      letter-spacing: -0.02em;
+      margin-bottom: 0.45rem;
+    }
+
+    .step p {
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .step code {
+      font-family: var(--mono);
+      font-size: 0.82em;
+      color: var(--ok);
+    }
+
+    .adapters {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 0.65rem 1.5rem;
+      list-style: none;
+      max-width: 36rem;
+    }
+
+    @media (min-width: 640px) {
+      .adapters { grid-template-columns: repeat(4, 1fr); max-width: none; }
+    }
+
+    .adapters li {
+      font-family: var(--mono);
+      font-size: 0.88rem;
+      padding: 0.85rem 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--ink);
+    }
+
+    .adapters li span {
+      display: block;
+      font-size: 0.72rem;
+      color: var(--faint);
+      margin-top: 0.25rem;
+      font-family: var(--sans);
+    }
+
+    .safety-grid {
+      display: grid;
+      gap: 1.5rem;
+    }
+
+    @media (min-width: 720px) {
+      .safety-grid {
+        grid-template-columns: 1.1fr 1fr;
+        gap: 3rem;
+        align-items: start;
+      }
+    }
+
+    .safety-list {
+      list-style: none;
+      display: grid;
+      gap: 0.9rem;
+    }
+
+    .safety-list li {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 0.75rem;
+      align-items: start;
+      color: var(--muted);
+      font-size: 0.98rem;
+    }
+
+    .safety-list strong {
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .tick {
+      width: 1.15rem;
+      height: 1.15rem;
+      margin-top: 0.15rem;
+      border-radius: 4px;
+      background: var(--accent-dim);
+      border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line));
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+
+    .tick svg {
+      width: 10px;
+      height: 10px;
+      stroke: var(--accent);
+      fill: none;
+      stroke-width: 2.5;
+    }
+
+    .install-block {
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 1.5rem;
+      overflow: hidden;
+    }
+
+    @media (min-width: 640px) {
+      .install-block { padding: 1.75rem 2rem; }
+    }
+
+    .install-block pre {
+      font-family: var(--mono);
+      font-size: clamp(0.75rem, 1.8vw, 0.88rem);
+      line-height: 1.75;
+      color: var(--muted);
+      overflow-x: auto;
+      white-space: pre;
+    }
+
+    .install-block .comment { color: var(--faint); }
+    .install-block .cmd { color: var(--ink); }
+    .install-block .accent { color: var(--accent); }
+
+    .copy-hint {
+      margin-top: 1rem;
+      font-family: var(--mono);
+      font-size: 0.72rem;
+      color: var(--faint);
+    }
+
+    .final {
+      text-align: center;
+      padding-bottom: 4rem;
+    }
+
+    .final .section-title {
+      max-width: none;
+      margin-inline: auto;
+    }
+
+    .final .section-copy {
+      margin-inline: auto;
+      margin-bottom: 1.75rem;
+    }
+
+    .final-ctas {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      justify-content: center;
+    }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.85rem 1.25rem;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: var(--bg-elev);
+      color: var(--ink);
+      font-weight: 600;
+      font-size: 0.92rem;
+      transition: border-color 0.2s, background 0.2s, transform 0.2s;
+    }
+
+    .btn-secondary:hover {
+      transform: translateY(-1px);
+      border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+      background: var(--accent-dim);
+    }
+
+    footer {
+      border-top: 1px solid var(--line);
+      padding: 1.75rem 0 2.5rem;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1rem;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--faint);
+      font-size: 0.85rem;
+    }
+
+    footer a:hover { color: var(--muted); }
+
+    footer .brand {
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      padding: 0.9rem 1.45rem;
+      border-radius: 10px;
+      background: #fff;
+      color: #0a0c0b;
+      font-weight: 650;
+      font-size: 0.95rem;
+      letter-spacing: -0.01em;
+      transition: transform 0.2s var(--ease), background 0.2s;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-1px);
+      background: #f0f2f0;
+    }
+
+    @keyframes rise {
+      to { opacity: 1; transform: none; }
+    }
+
+    @keyframes blink {
+      0%, 48% { opacity: 1; }
+      50%, 100% { opacity: 0; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .hero-stage,
+      .hero-preview {
+        opacity: 1;
+        transform: none;
+        animation: none;
+      }
+      .reveal {
+        opacity: 1;
+        transform: none;
+        transition: none;
+      }
+      .cursor { animation: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="atmosphere" aria-hidden="true"></div>
+
+  <div class="wrap">
+    <nav class="topbar" aria-label="Primary">
+      <a class="brand" href="#">cli<span>2</span>api</a>
+      <a class="star-badge" href="https://github.com/cochon123/cli2api">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.2 9.9 5l4.1.6-3 2.9.7 4.1L8 10.7 4.3 12.6l.7-4.1-3-2.9L6.1 5 8 1.2z"/></svg>
+        MIT · open source
+      </a>
+    </nav>
+
+    <header class="hero">
+      <div class="hero-stage">
+        <p class="brand-hero">cli<em>2</em>api</p>
+        <h1 class="headline">Turn your coding CLI into an OpenAI API</h1>
+        <p class="lede">
+          Point any OpenAI SDK at localhost and run against Codex, OpenCode, Cursor Agent, or Claude Code — with the login you already have.
+        </p>
+        <div class="cta-stack">
+          <div class="install-chip">
+            <code><span class="prompt">$</span><span id="install-cmd">npm i -g cli2api</span></code>
+            <button class="copy-btn" type="button" id="copy-install" aria-label="Copy install command" title="Copy">
+              <svg class="icon-copy" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
+                <path d="M3.5 10.5V3.5A1 1 0 0 1 4.5 2.5h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
+              </svg>
+              <svg class="icon-done" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M3.5 8.2 6.6 11.2 12.5 4.8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+          <a class="ghost-link" href="https://github.com/cochon123/cli2api">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 8 3.5c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            Steal our code (legally)
+            <svg class="arrow" viewBox="0 0 12 12" aria-hidden="true"><path d="M3 9 9 3M4.5 3H9v4.5"/></svg>
+          </a>
+        </div>
+      </div>
+
+      <div class="hero-preview" aria-hidden="true">
+        <div class="preview-window">
+          <div class="preview-chrome">
+            <div class="traffic">
+              <span class="dot r"></span>
+              <span class="dot y"></span>
+              <span class="dot g"></span>
+            </div>
+            <span class="preview-title">Terminal — cli2api — 80×24</span>
+          </div>
+          <div class="preview-main">
+            <div class="term-line"><span class="prompt">$</span> <span class="cmd">cli2api serve --adapter codex</span></div>
+            <div class="term-line"><span class="out">bound to http://127.0.0.1:3927</span></div>
+            <div class="term-line"><span class="out">token </span><span class="hl">dev-secret</span></div>
+            <div class="env-block">
+              <div class="term-line"><span class="dim"># one env swap — keep your SDK</span></div>
+              <div class="term-line"><span class="cmd">OPENAI_BASE_URL=</span><span class="anim-value cloud" id="anim-url">https://api.openai.com/v1</span><span class="cursor" id="cursor-url"></span></div>
+              <div class="term-line"><span class="cmd">OPENAI_API_KEY=</span><span class="anim-value cloud" id="anim-key">sk-proj-••••••••••••</span><span class="cursor hidden" id="cursor-key"></span></div>
+              <div class="term-line"><span class="cmd">OPENAI_MODEL=</span><span class="hl">codex/default</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section id="how">
+      <div class="reveal">
+        <p class="section-label">How it works</p>
+        <h2 class="section-title">One env swap. Same clients.</h2>
+        <p class="section-copy">
+          Coding CLIs already handle login, quotas, and tool loops — they just speak terminal. cli2api is the HTTP adapter so benchmarks, evals, and side projects can talk to them.
+        </p>
+        <div class="steps">
+          <div class="step">
+            <h3>Start the gateway</h3>
+            <p>Run <code>cli2api serve</code> on loopback. It prints a bearer token and binds to <code>127.0.0.1</code> only.</p>
+          </div>
+          <div class="step">
+            <h3>Point your client</h3>
+            <p>Set <code>OPENAI_BASE_URL</code> to the local gateway. Keep your existing OpenAI SDK, litellm harness, or fetch calls.</p>
+          </div>
+          <div class="step">
+            <h3>Hit a real CLI</h3>
+            <p>Requests route to Codex, OpenCode, Cursor Agent, or Claude Code — streaming, tools, and session resume included.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="adapters">
+      <div class="reveal">
+        <p class="section-label">Adapters</p>
+        <h2 class="section-title">The CLIs you already use</h2>
+        <p class="section-copy">
+          Model ids use <code style="font-family:var(--mono);font-size:0.9em;color:var(--ok)">adapter/model</code> routing. OpenAI and OpenRouter shapes both work.
+        </p>
+        <ul class="adapters">
+          <li>Codex<span>codex/default</span></li>
+          <li>OpenCode<span>opencode/…</span></li>
+          <li>Cursor Agent<span>cursor/…</span></li>
+          <li>Claude Code<span>claude/default</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="safety">
+      <div class="reveal safety-grid">
+        <div>
+          <p class="section-label">Local by design</p>
+          <h2 class="section-title">Not a cloud proxy</h2>
+          <p class="section-copy" style="margin-bottom:0">
+            Your CLI credentials stay on your machine. cli2api is boring infrastructure — a loopback gateway, not a multi-tenant product.
+          </p>
+        </div>
+        <ul class="safety-list">
+          <li>
+            <span class="tick" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M2 6.5 4.8 9.2 10 3"/></svg></span>
+            <span><strong>Loopback only</strong> — binds to 127.0.0.1 by default</span>
+          </li>
+          <li>
+            <span class="tick" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M2 6.5 4.8 9.2 10 3"/></svg></span>
+            <span><strong>Bearer token required</strong> — no open endpoints</span>
+          </li>
+          <li>
+            <span class="tick" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M2 6.5 4.8 9.2 10 3"/></svg></span>
+            <span><strong>Read-only sandbox</strong> — safe defaults for child CLIs</span>
+          </li>
+          <li>
+            <span class="tick" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M2 6.5 4.8 9.2 10 3"/></svg></span>
+            <span><strong>No open CORS</strong> — built for SDKs and scripts, not browsers</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <section id="install">
+      <div class="reveal">
+        <p class="section-label">Install</p>
+        <h2 class="section-title">Up in thirty seconds</h2>
+        <p class="section-copy">
+          From the project root — mock adapter first, then swap in a real CLI when you’re ready.
+        </p>
+        <div class="install-block">
+          <pre><span class="comment"># start the gateway</span>
+<span class="accent">$</span> <span class="cmd">npm install</span>
+<span class="accent">$</span> <span class="cmd">npm run serve -- --adapter mock --port 3927</span>
+
+<span class="comment"># point your client</span>
+<span class="cmd">OPENAI_BASE_URL=http://127.0.0.1:3927/v1</span>
+<span class="cmd">OPENAI_API_KEY=&lt;token from serve&gt;</span>
+<span class="cmd">OPENAI_MODEL=mock/echo</span></pre>
+          <p class="copy-hint">MIT · Node 20+ · OpenAI + OpenRouter compatible</p>
+        </div>
+      </div>
+    </section>
+
+    <section class="final">
+      <div class="reveal">
+        <h2 class="section-title">Run your harness against the CLI you already trust</h2>
+        <p class="section-copy">
+          Benchmarks, evals, and side projects — same API shape, local credentials, no rewrite.
+        </p>
+        <div class="final-ctas">
+          <a class="btn-primary" href="#install">Get started</a>
+          <a class="btn-secondary" href="https://github.com/cochon123/cli2api">Star on GitHub</a>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      <a class="brand" href="#">cli<span>2</span>api</a>
+      <span>Local gateway · MIT</span>
+      <a href="https://github.com/cochon123/cli2api">GitHub</a>
+    </footer>
+  </div>
+
+  <script>
+    const reveals = document.querySelectorAll(".reveal");
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("in");
+            io.unobserve(entry.target);
+          }
+        }
+      },
+      { threshold: 0.18, rootMargin: "0px 0px -8% 0px" }
+    );
+    reveals.forEach((el) => io.observe(el));
+
+    const copyBtn = document.getElementById("copy-install");
+    const installCmd = document.getElementById("install-cmd");
+    if (copyBtn && installCmd) {
+      copyBtn.addEventListener("click", async () => {
+        const text = installCmd.textContent.trim();
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch {
+          const range = document.createRange();
+          range.selectNodeContents(installCmd);
+          const sel = window.getSelection();
+          sel.removeAllRanges();
+          sel.addRange(range);
+        }
+        copyBtn.classList.add("copied");
+        copyBtn.setAttribute("aria-label", "Copied");
+        setTimeout(() => {
+          copyBtn.classList.remove("copied");
+          copyBtn.setAttribute("aria-label", "Copy install command");
+        }, 1400);
+      });
+    }
+
+    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    const urlEl = document.getElementById("anim-url");
+    const keyEl = document.getElementById("anim-key");
+    const cursorUrl = document.getElementById("cursor-url");
+    const cursorKey = document.getElementById("cursor-key");
+
+    const CLOUD_URL = "https://api.openai.com/v1";
+    const LOCAL_URL = "http://127.0.0.1:3927/v1";
+    const CLOUD_KEY = "sk-proj-••••••••••••";
+    const LOCAL_KEY = "dev-secret";
+
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    function setCursor(onKey) {
+      cursorUrl.classList.toggle("hidden", onKey);
+      cursorKey.classList.toggle("hidden", !onKey);
+    }
+
+    async function deleteText(el, delay = 28) {
+      el.classList.remove("local");
+      el.classList.add("cloud");
+      while (el.textContent.length > 0) {
+        el.textContent = el.textContent.slice(0, -1);
+        await sleep(delay);
+      }
+    }
+
+    async function typeText(el, text, delay = 36) {
+      el.classList.remove("cloud");
+      el.classList.add("local");
+      el.textContent = "";
+      for (const ch of text) {
+        el.textContent += ch;
+        await sleep(delay);
+      }
+    }
+
+    async function runSwapLoop() {
+      if (!urlEl || !keyEl) return;
+
+      if (reduceMotion) {
+        urlEl.textContent = LOCAL_URL;
+        keyEl.textContent = LOCAL_KEY;
+        urlEl.classList.add("local");
+        keyEl.classList.add("local");
+        setCursor(false);
+        return;
+      }
+
+      while (true) {
+        urlEl.textContent = CLOUD_URL;
+        keyEl.textContent = CLOUD_KEY;
+        urlEl.classList.add("cloud");
+        urlEl.classList.remove("local");
+        keyEl.classList.add("cloud");
+        keyEl.classList.remove("local");
+        setCursor(false);
+
+        await sleep(1400);
+        await deleteText(urlEl, 26);
+        await sleep(220);
+        await typeText(urlEl, LOCAL_URL, 34);
+        await sleep(500);
+
+        setCursor(true);
+        await sleep(280);
+        await deleteText(keyEl, 30);
+        await sleep(220);
+        await typeText(keyEl, LOCAL_KEY, 40);
+        await sleep(2800);
+      }
+    }
+
+    runSwapLoop();
+  </script>
+</body>
+</html>
