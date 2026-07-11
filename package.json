@@ -1,10 +1,26 @@
 {
-  "name": "cli2api",
+  "name": "@cochon123/cli2api",
   "version": "0.1.0",
-  "description": "Local OpenAI-compatible gateway for coding CLIs (Codex, OpenCode, …)",
+  "description": "Local OpenAI- and OpenRouter-compatible gateway for coding CLIs",
   "type": "module",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
   "bin": {
-    "cli2api": "./dist/index.js"
+    "cli2api": "dist/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cochon123/cli2api.git"
+  },
+  "homepage": "https://github.com/cochon123/cli2api#readme",
+  "bugs": {
+    "url": "https://github.com/cochon123/cli2api/issues"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
@@ -17,13 +33,17 @@
     "adapters": "tsx src/index.ts adapters",
     "test:smoke": "tsx scripts/smoke.ts",
     "test:adapters": "tsx scripts/adapter-contract.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm run test:adapters && npm run test:smoke",
+    "prepare": "npm run build",
+    "prepublishOnly": "npm run verify"
   },
   "engines": {
     "node": ">=20"
   },
   "keywords": [
     "openai",
+    "openrouter",
     "cli",
     "codex",
     "local",

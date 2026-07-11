@@ -8,6 +8,24 @@ Point any OpenAI SDK / benchmark at localhost and run against **Codex, OpenCode,
 
 ## 30-second start
 
+Install the published package globally:
+
+```bash
+npm install --global @cochon123/cli2api
+cli2api serve --adapter mock --port 3927
+```
+
+The npm package is scoped because the unscoped `cli2api` name is already owned by another publisher. The installed executable is still named `cli2api`.
+
+Before the first npm release, or to install the current GitHub version directly:
+
+```bash
+npm install --global github:cochon123/cli2api
+cli2api --version
+```
+
+For development from a checkout:
+
 ```bash
 # from the project root
 npm install
