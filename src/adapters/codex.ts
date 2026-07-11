@@ -340,7 +340,10 @@ function buildExecArgs(
     "hide_agent_reasoning=false",
   );
   // Optional effort override from OpenAI-shaped request body.
-  const rawEffort = req.raw?.reasoning_effort ?? req.raw?.reasoningEffort;
+  const reasoning = req.raw?.reasoning;
+  const rawEffort = req.raw?.reasoning_effort
+    ?? (reasoning && typeof reasoning === "object" && !Array.isArray(reasoning) ? reasoning.effort : undefined)
+    ?? req.raw?.reasoningEffort;
   if (typeof rawEffort === "string" && rawEffort.trim() && rawEffort.trim() !== "none") {
     args.push("-c", `model_reasoning_effort=${rawEffort.trim().toLowerCase()}`);
   }

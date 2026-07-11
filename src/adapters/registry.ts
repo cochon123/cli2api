@@ -5,7 +5,7 @@ import { createOpenCodeAdapter, type OpenCodeAdapterOptions } from "./opencode.j
 import { createCursorAdapter, type CursorAdapterOptions } from "./cursor.js";
 import { createClaudeAdapter, type ClaudeAdapterOptions } from "./claude.js";
 import { parseModelId } from "../protocol/openai.js";
-import type { NormalizedChatRequest } from "../types.js";
+import type { ModelRoute, NormalizedChatRequest } from "../types.js";
 
 export type AdapterId = "mock" | "codex" | "opencode" | "cursor" | "claude";
 
@@ -16,16 +16,19 @@ export interface CreateRegistryOptions {
   cursor?: CursorAdapterOptions;
   claude?: ClaudeAdapterOptions;
   modelAliases?: Record<string, string>;
+  modelRoutes?: Record<string, ModelRoute>;
 }
 
 export class AdapterRegistry {
   private adapters = new Map<string, Adapter>();
   readonly defaultAdapterId: string;
   readonly modelAliases: Readonly<Record<string, string>>;
+  readonly modelRoutes: Readonly<Record<string, ModelRoute>>;
 
   constructor(opts: CreateRegistryOptions = {}) {
     this.defaultAdapterId = opts.defaultAdapter ?? "mock";
     this.modelAliases = Object.freeze({ ...(opts.modelAliases ?? {}) });
+    this.modelRoutes = Object.freeze({ ...(opts.modelRoutes ?? {}) });
     this.register(createMockAdapter());
     this.register(createCodexAdapter(opts.codex));
     this.register(createOpenCodeAdapter(opts.opencode));
@@ -55,7 +58,8 @@ export class AdapterRegistry {
       seen.add(current);
       current = this.modelAliases[current];
     }
-    return current;
+    const route = this.modelRoutes[current];
+    return route ? `${route.adapter}/${route.model}` : current;
   }
 
   normalizeRequest(req: NormalizedChatRequest): NormalizedChatRequest {
@@ -73,7 +77,21 @@ export class AdapterRegistry {
       owned_by: "cli2api-alias",
       description: `Alias for ${target}`,
     }));
-    return [...all, ...aliases];
+    const routes = Object.entries(this.modelRoutes).map(([id, target]) => ({
+      id,
+      object: "model" as const,
+      created: 0,
+      owned_by: "cli2api-openrouter-route",
+      description: `Routes to ${target.adapter}/${target.model}`,
+    }));
+    return [...all, ...aliases, ...routes];
+  }
+
+  isExplicitlyRoutable(model: string): boolean {
+    const resolved = this.resolveModelId(model);
+    const slash = resolved.indexOf("/");
+    if (slash < 0) return Boolean(this.modelAliases[model]);
+    return this.adapters.has(resolved.slice(0, slash));
   }
 
   /** Resolve adapter from model id (`codex/o3`) or explicit --adapter. */

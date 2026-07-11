@@ -132,6 +132,15 @@ export function normalizeChatRequest(body: ChatCompletionRequest): NormalizedCha
   if (body.max_tokens !== undefined && (!Number.isInteger(body.max_tokens) || body.max_tokens < 1)) {
     invalid("`max_tokens` must be a positive integer");
   }
+  if (body.max_completion_tokens !== undefined && (!Number.isInteger(body.max_completion_tokens) || body.max_completion_tokens < 1)) {
+    invalid("`max_completion_tokens` must be a positive integer");
+  }
+  if (body.include_reasoning !== undefined && typeof body.include_reasoning !== "boolean") {
+    invalid("`include_reasoning` must be a boolean");
+  }
+  if (body.reasoning !== undefined && (!body.reasoning || typeof body.reasoning !== "object" || Array.isArray(body.reasoning))) {
+    invalid("`reasoning` must be an object");
+  }
   if (body.tools !== undefined && !Array.isArray(body.tools)) invalid("`tools` must be an array");
   const tools = body.tools ?? [];
   for (let index = 0; index < tools.length; index += 1) {
@@ -174,7 +183,9 @@ export function normalizeChatRequest(body: ChatCompletionRequest): NormalizedCha
     messages: body.messages,
     stream: Boolean(body.stream),
     temperature: typeof body.temperature === "number" ? body.temperature : undefined,
-    maxTokens: typeof body.max_tokens === "number" ? body.max_tokens : undefined,
+    maxTokens: typeof body.max_completion_tokens === "number"
+      ? body.max_completion_tokens
+      : typeof body.max_tokens === "number" ? body.max_tokens : undefined,
     raw: body,
     tools,
     toolChoice: body.tool_choice,
@@ -182,8 +193,9 @@ export function normalizeChatRequest(body: ChatCompletionRequest): NormalizedCha
   };
 }
 
-export function completionId(): string {
-  return `chatcmpl_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
+export function completionId(prefix = "chatcmpl"): string {
+  const separator = prefix === "chatcmpl" ? "_" : "-";
+  return `${prefix}${separator}${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
 }
 
 export function buildCompletionResponse(opts: {
@@ -193,6 +205,8 @@ export function buildCompletionResponse(opts: {
   finishReason?: "stop" | "length" | "tool_calls" | "error";
   usage?: ChatCompletionResponse["usage"];
   toolCalls?: ToolCall[];
+  reasoning?: string;
+  openRouter?: boolean;
 }): ChatCompletionResponse {
   return {
     id: opts.id,
@@ -205,9 +219,11 @@ export function buildCompletionResponse(opts: {
         message: {
           role: "assistant",
           content: opts.toolCalls?.length ? null : opts.content,
+          ...(opts.reasoning ? { reasoning: opts.reasoning, reasoning_content: opts.reasoning } : {}),
           ...(opts.toolCalls?.length ? { tool_calls: opts.toolCalls } : {}),
         },
         finish_reason: opts.finishReason ?? "stop",
+        ...(opts.openRouter ? { native_finish_reason: opts.finishReason ?? "stop" } : {}),
       },
     ],
     usage: opts.usage,
@@ -230,19 +246,24 @@ export function buildChunk(opts: {
     }>;
   };
   finishReason?: "stop" | "length" | "tool_calls" | "error" | null;
+  usage?: ChatCompletionResponse["usage"];
+  openRouter?: boolean;
+  emptyChoices?: boolean;
 }): ChatCompletionChunk {
   return {
     id: opts.id,
     object: "chat.completion.chunk",
     created: Math.floor(Date.now() / 1000),
     model: opts.model,
-    choices: [
+    choices: opts.emptyChoices ? [] : [
       {
         index: 0,
         delta: opts.delta ?? {},
         finish_reason: opts.finishReason ?? null,
+        ...(opts.openRouter ? { native_finish_reason: opts.finishReason ?? null } : {}),
       },
     ],
+    ...(opts.usage ? { usage: opts.usage } : {}),
   };
 }
 

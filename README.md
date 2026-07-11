@@ -1,6 +1,6 @@
 # cli2api
 
-Local OpenAI-compatible gateway for coding CLIs.
+Local OpenAI- and OpenRouter-compatible gateway for coding CLIs.
 
 Point any OpenAI SDK / benchmark at localhost and run against **Codex, OpenCode, Cursor Agent, or Claude Code** (plus the built-in mock) using the credentials/login already configured in each CLI.
 
@@ -102,6 +102,8 @@ After `npm run build`, the bin is `cli2api`.
 | `CLI2API_CWD` | Working directory for CLI adapters |
 | `CLI2API_CHILD_ENV_ALLOWLIST` | Comma-separated extra parent env names to explicitly pass to child CLIs |
 | `CLI2API_CONFIG` | Explicit JSON config path |
+| `CLI2API_OPENROUTER_CATALOG` | OpenRouter catalog mode (`runnable` or `mirror`) |
+| `OPENROUTER_API_KEY` | Optional key used only to refresh OpenRouter model metadata |
 
 ## Config and model aliases
 
@@ -116,6 +118,21 @@ JSON config is merged in this order: `$XDG_CONFIG_HOME/cli2api/config.json`, pro
   "modelAliases": {
     "fast": "opencode/deepseek-v4-flash-free",
     "composer": "cursor/composer-2.5-fast"
+  },
+  "openRouter": {
+    "defaultModel": "anthropic/claude-sonnet-4",
+    "catalogMode": "runnable",
+    "annotateAvailability": true,
+    "modelRoutes": {
+      "anthropic/claude-sonnet-4": {
+        "adapter": "claude",
+        "model": "sonnet"
+      },
+      "openai/gpt-local": {
+        "adapter": "codex",
+        "model": "default"
+      }
+    }
   },
   "binaries": {
     "codex": "codex",
@@ -134,10 +151,34 @@ Aliases appear in `/v1/models` and work anywhere a model id is accepted.
 - `GET /v1/models`
 - `POST /v1/chat/completions` — non-stream + `stream: true` (SSE)
 - `POST /v1/responses` — text/function input, non-stream + semantic SSE events
+- `GET /api/v1/models` — OpenRouter-compatible model catalog
+- `POST /api/v1/chat/completions` — OpenRouter-compatible chat, tools, reasoning, and SSE
+- `POST /api/v1/responses` — OpenRouter path alias for the Responses subset
 
 All endpoints require `Authorization: Bearer <token>`.
 
 Model ids: `adapter/model` — e.g. `mock/echo`, `codex/default`, `opencode/deepseek-v4-flash-free`, `cursor/composer-2.5-fast`, `claude/sonnet`. OpenCode provider-qualified models keep the second slash, for example `opencode/openrouter/deepseek/deepseek-v4-flash`.
+
+## OpenRouter compatibility
+
+Point an OpenRouter-oriented client at `http://127.0.0.1:3927/api/v1` and use the same cli2api bearer token. Public OpenRouter model ids are mapped to local CLI models with `openRouter.modelRoutes`; the public id is preserved in responses while routing stays internal.
+
+If an application relies on OpenRouter's account-level default and omits `model`, set `openRouter.defaultModel` locally.
+
+The OpenRouter catalog has two modes:
+
+- `runnable` (default) lists only models cli2api can execute. Configured OpenRouter ids are enriched with metadata from OpenRouter's models API.
+- `mirror` returns the cached OpenRouter catalog so model discovery resembles production. Models without a local route remain visible but return a `model_not_available` error when called.
+
+Select the mode in config or with `cli2api serve --openrouter-catalog runnable|mirror`.
+
+Metadata is cached for 24 hours at `$XDG_CACHE_HOME/cli2api/openrouter-models.json` (or `~/.cache/cli2api/openrouter-models.json`). Stale data is used if refresh fails. Configure `metadataTtlSeconds`, `metadataCachePath`, or `metadataUrl` under `openRouter` when needed. Pricing fields describe OpenRouter's hosted service, not local CLI execution.
+
+For safety, `OPENROUTER_API_KEY` is sent only to the canonical `https://openrouter.ai` origin. Custom `metadataUrl` sources never receive it. Cache entries are tied to their source URL so catalogs cannot be mixed across sources.
+
+Set `annotateAvailability` to `true` to add a `cli2api` object to model records with local availability and routing details. Set it to `false` in `mirror` mode for the closest upstream catalog shape.
+
+OpenRouter cloud-only routing features such as provider fallback, billing, and plugins are accepted as request metadata but are not performed locally. Adapter capabilities still determine the actual result.
 
 Function tools are accepted in both OpenAI API shapes. Because these coding CLIs do not expose a uniform native tool protocol, cli2api supplies the function schemas in the prompt and validates a strict JSON call envelope; it returns standard `tool_calls` / `function_call` output. Tool names and JSON argument objects are always validated, and `strict: true` arguments are validated against the supplied JSON Schema. The mock adapter has native deterministic tool events for tests.
 
@@ -146,6 +187,7 @@ For Chat Completions, reuse a client-chosen `session_id` to resume the CLI's nat
 ## Phase 0 scope
 
 - [x] OpenAI chat completions + models
+- [x] OpenRouter-compatible paths, model routing, catalog modes, reasoning, and streaming usage
 - [x] Mock adapter (instant env-swap proof)
 - [x] Codex adapter via `codex exec --json`
 - [x] Loopback-only bind + `doctor` / `completion`
@@ -172,6 +214,7 @@ src/
   index.ts              # CLI
   adapters/             # mock, codex, registry
   protocol/openai.ts    # request/response shaping
+  openrouter/catalog.ts # cached metadata and runnable/mirror model views
   server/               # Hono app + listen
   types.ts
 scripts/smoke.ts

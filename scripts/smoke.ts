@@ -20,19 +20,43 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
 }
 
 async function main() {
-  const registry = createRegistry({ defaultAdapter: "mock" });
+  const registry = createRegistry({
+    defaultAdapter: "mock",
+    modelRoutes: { "openai/gpt-local-test": { adapter: "mock", model: "echo" } },
+  });
   const server = await listen({
     registry,
     host: "127.0.0.1",
     port: PORT,
     token: TOKEN,
     verbose: false,
+    openRouter: {
+      defaultModel: "openai/gpt-local-test",
+      mode: "runnable",
+      fetchImpl: async () => new Response(JSON.stringify({ data: [{
+        id: "openai/gpt-local-test",
+        canonical_slug: "openai/gpt-local-test",
+        name: "GPT Local Test",
+        description: "Upstream metadata fixture",
+        context_length: 12345,
+        supported_parameters: ["tools", "tool_choice", "reasoning", "temperature"],
+        architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+      }] }), { headers: { "Content-Type": "application/json" } }),
+      metadataCachePath: `/tmp/cli2api-smoke-openrouter-models-${process.pid}.json`,
+      metadataTtlSeconds: 60,
+    },
   });
   const base = `http://127.0.0.1:${PORT}`;
 
   try {
     const denied = await fetch(`${base}/health`);
     assert(denied.status === 401, "unauthenticated health must be 401");
+
+    const openRouterDenied = await fetch(`${base}/api/v1/models`).then(async (response) => ({
+      status: response.status,
+      body: await response.json(),
+    }));
+    assert(openRouterDenied.status === 401 && openRouterDenied.body.error?.code === 401, "OpenRouter authentication error shape");
 
     const health = await fetch(`${base}/health`, { headers: authHeaders() }).then((r) => r.json());
     assert(health.ok === true, "health.ok");
@@ -43,6 +67,67 @@ async function main() {
       models.data.some((m: { id: string }) => m.id === "mock/echo"),
       "mock/echo listed",
     );
+
+    const openRouterModels = await fetch(`${base}/api/v1/models`, { headers: authHeaders() }).then((r) => r.json());
+    const routedModel = openRouterModels.data.find((m: { id: string }) => m.id === "openai/gpt-local-test");
+    assert(routedModel?.name === "GPT Local Test", "OpenRouter metadata merged into routed model");
+    assert(routedModel?.context_length === 12345, "OpenRouter context metadata preserved");
+    assert(routedModel?.cli2api?.available === true, "routed model annotated available");
+    assert(!routedModel.supported_parameters.includes("temperature"), "unsupported local parameter removed");
+
+    const openRouterCompletion = await fetch(`${base}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "openai/gpt-local-test",
+        messages: [{ role: "user", content: "openrouter-ping" }],
+        reasoning: { effort: "low" },
+      }),
+    }).then((r) => r.json());
+    assert(openRouterCompletion.id.startsWith("gen-"), "OpenRouter generation id");
+    assert(openRouterCompletion.model === "openai/gpt-local-test", "public model id preserved");
+    assert(openRouterCompletion.choices[0].native_finish_reason === "stop", "native finish reason");
+    assert(openRouterCompletion.choices[0].message.reasoning === "mock reasoning", "non-stream reasoning");
+
+    const defaultModelCompletion = await fetch(`${base}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ messages: [{ role: "user", content: "default-model" }] }),
+    }).then((r) => r.json());
+    assert(defaultModelCompletion.model === "openai/gpt-local-test", "configured OpenRouter default model");
+
+    const openRouterStream = await fetch(`${base}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "openai/gpt-local-test",
+        stream: true,
+        messages: [{ role: "user", content: "openrouter-stream" }],
+        include_reasoning: true,
+      }),
+    }).then((r) => r.text());
+    const openRouterChunks = openRouterStream.split("\n")
+      .filter((line) => line.startsWith("data: {") && !line.includes("[DONE]"))
+      .map((line) => JSON.parse(line.slice(6)));
+    assert(openRouterChunks.some((chunk) => chunk.choices?.[0]?.delta?.reasoning), "stream reasoning delta");
+    assert(openRouterChunks.some((chunk) => Array.isArray(chunk.choices) && chunk.choices.length === 0 && chunk.usage?.total_tokens), "final empty-choice usage chunk");
+
+    const unavailable = await fetch(`${base}/api/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model: "google/unmapped", messages: [{ role: "user", content: "x" }] }),
+    });
+    const unavailableBody = await unavailable.json();
+    assert(unavailable.status === 400 && unavailableBody.error?.code === 400, "unmapped mirrored model status code");
+    assert(unavailableBody.error?.metadata?.error_type === "invalid_request", "unmapped model OpenRouter error type");
+    assert(unavailableBody.error?.metadata?.cli2api_code === "model_not_available", "unmapped model local error detail");
+
+    const openRouterResponse = await fetch(`${base}/api/v1/responses`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model: "openai/gpt-local-test", input: "openrouter-response" }),
+    }).then((r) => r.json());
+    assert(openRouterResponse.object === "response" && openRouterResponse.model === "openai/gpt-local-test", "OpenRouter Responses path and public model");
 
     // Non-stream
     const completion = await fetch(`${base}/v1/chat/completions`, {

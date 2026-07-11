@@ -1,6 +1,6 @@
 import { serve } from "@hono/node-server";
 import type { AdapterRegistry } from "../adapters/registry.js";
-import { createApp } from "./app.js";
+import { createApp, type OpenRouterServerOptions } from "./app.js";
 
 export interface ListenOptions {
   registry: AdapterRegistry;
@@ -10,6 +10,7 @@ export interface ListenOptions {
   /** Required bearer token (generate one at startup if the operator did not set it). */
   token: string;
   verbose?: boolean;
+  openRouter?: OpenRouterServerOptions;
 }
 
 export function assertLoopbackHost(host: string): void {
@@ -32,6 +33,7 @@ export async function listen(opts: ListenOptions): Promise<{ host: string; port:
     adapter: opts.adapter,
     token: opts.token,
     verbose: opts.verbose,
+    openRouter: opts.openRouter,
   });
 
   const server = serve({ fetch: app.fetch, hostname: host, port });

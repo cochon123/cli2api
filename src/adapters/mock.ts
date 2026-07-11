@@ -41,6 +41,9 @@ async function* echoChat(req: NormalizedChatRequest): AsyncGenerator<ChatEvent> 
     yield { type: "done", finishReason: "tool_calls" };
     return;
   }
+  if (req.raw.include_reasoning === true || (req.raw.reasoning && req.raw.reasoning.enabled !== false)) {
+    yield { type: "delta", text: "mock reasoning", channel: "reasoning" };
+  }
   const reply = `[mock/echo] ${last}`;
   // Fake-stream in small chunks so clients exercise SSE path
   const chunkSize = 24;

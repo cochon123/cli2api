@@ -42,11 +42,23 @@ export interface ChatCompletionRequest {
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
+  max_completion_tokens?: number;
   top_p?: number;
   stop?: string | string[];
   user?: string;
   tools?: ChatTool[];
   tool_choice?: "none" | "auto" | "required" | { type: "function"; function: { name: string } };
+  include_reasoning?: boolean;
+  reasoning?: {
+    effort?: string;
+    max_tokens?: number;
+    exclude?: boolean;
+    enabled?: boolean;
+  };
+  reasoning_effort?: string;
+  response_format?: Record<string, unknown>;
+  provider?: Record<string, unknown>;
+  plugins?: Array<Record<string, unknown>>;
   /** cli2api extension: stable gateway session key for native CLI resume. */
   session_id?: string;
   /** Pass-through / debug */
@@ -58,9 +70,13 @@ export interface ChatCompletionChoice {
   message: {
     role: "assistant";
     content: string | null;
+    /** OpenRouter reasoning text when the selected CLI exposes it. */
+    reasoning?: string;
+    reasoning_content?: string;
     tool_calls?: ToolCall[];
   };
   finish_reason: "stop" | "length" | "tool_calls" | "error" | null;
+  native_finish_reason?: string | null;
 }
 
 export interface ChatCompletionResponse {
@@ -98,7 +114,9 @@ export interface ChatCompletionChunk {
       }>;
     };
     finish_reason: "stop" | "length" | "tool_calls" | "error" | null;
+    native_finish_reason?: string | null;
   }>;
+  usage?: ChatCompletionResponse["usage"];
 }
 
 export interface ModelInfo {
@@ -108,6 +126,12 @@ export interface ModelInfo {
   owned_by: string;
   /** Adapter-specific notes */
   description?: string;
+  [key: string]: unknown;
+}
+
+export interface ModelRoute {
+  adapter: "mock" | "codex" | "opencode" | "cursor" | "claude";
+  model: string;
 }
 
 export interface NormalizedChatRequest {

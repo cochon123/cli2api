@@ -13,6 +13,7 @@ import { SessionStore } from "../src/session.js";
 import { normalizeChatRequest } from "../src/protocol/openai.js";
 import { parseToolCalls } from "../src/protocol/tools.js";
 import { responsesToChat } from "../src/protocol/responses.js";
+import { OpenRouterCatalog } from "../src/openrouter/catalog.js";
 
 function parserContracts(): void {
   const openReasoning = parseOpenCodeLine(JSON.stringify({
@@ -96,6 +97,60 @@ async function registryContract(): Promise<void> {
   assert.equal(aliases.resolve("fast").id, "cursor");
   assert((await aliases.listModels()).some((model) => model.id === "fast"));
   assert.throws(() => createRegistry({ modelAliases: { a: "b", b: "a" } }).resolveModelId("a"), /cycle/);
+
+  const routed = createRegistry({ modelRoutes: { "anthropic/claude-test": { adapter: "mock", model: "echo" } } });
+  const routedReq = routed.normalizeRequest(normalizeChatRequest({
+    model: "anthropic/claude-test",
+    messages: [{ role: "user", content: "x" }],
+  }));
+  assert.equal(routedReq.model, "mock/echo");
+  assert.equal(routedReq.modelLocal, "echo");
+  assert.equal(routed.resolve(routedReq.model).id, "mock");
+}
+
+async function openRouterCatalogContract(): Promise<void> {
+  const registry = createRegistry({ modelRoutes: { "anthropic/claude-test": { adapter: "mock", model: "echo" } } });
+  const upstream = [
+    { id: "anthropic/claude-test", name: "Claude Test", context_length: 200_000, supported_parameters: ["tools", "temperature"] },
+    { id: "google/unavailable-test", name: "Unavailable Test", context_length: 1_000_000, supported_parameters: ["tools"] },
+  ];
+  const fetchImpl = async () => new Response(JSON.stringify({ data: upstream }), { headers: { "Content-Type": "application/json" } });
+  const root = await mkdtemp(join(tmpdir(), "cli2api-catalog-"));
+
+  const runnable = new OpenRouterCatalog(registry, {
+    mode: "runnable",
+    fetchImpl,
+    metadataCachePath: join(root, "runnable.json"),
+  });
+  const runnableModels = await runnable.list();
+  const routed = runnableModels.find((model) => model.id === "anthropic/claude-test");
+  assert.equal(routed?.name, "Claude Test");
+  assert.equal((routed?.cli2api as { available?: boolean })?.available, true);
+  assert(!runnableModels.some((model) => model.id === "google/unavailable-test"));
+
+  const mirror = new OpenRouterCatalog(registry, {
+    mode: "mirror",
+    annotateAvailability: false,
+    fetchImpl,
+    metadataCachePath: join(root, "mirror.json"),
+  });
+  const mirrorModels = await mirror.list();
+  assert.deepEqual(mirrorModels, upstream);
+  assert((await mirror.list(new URLSearchParams({ q: "unavailable" }))).some((model) => model.id === "google/unavailable-test"));
+
+  let customHeaders: HeadersInit | undefined;
+  const custom = new OpenRouterCatalog(registry, {
+    mode: "mirror",
+    apiKey: "must-not-leak",
+    metadataUrl: "https://metadata.example.test/models",
+    metadataCachePath: join(root, "custom.json"),
+    fetchImpl: async (_url, init) => {
+      customHeaders = init?.headers;
+      return new Response(JSON.stringify({ data: [] }), { headers: { "Content-Type": "application/json" } });
+    },
+  });
+  assert.deepEqual(await custom.list(), []);
+  assert.equal(new Headers(customHeaders).has("Authorization"), false, "OpenRouter key must not be sent to custom metadata origins");
 }
 
 async function configContract(): Promise<void> {
@@ -104,11 +159,24 @@ async function configContract(): Promise<void> {
   const cwd = join(root, "project");
   await mkdir(join(xdg, "cli2api"), { recursive: true });
   await mkdir(cwd, { recursive: true });
-  await writeFile(join(xdg, "cli2api", "config.json"), JSON.stringify({ port: 4000, modelAliases: { fast: "mock/slow" } }));
-  await writeFile(join(cwd, ".cli2api.json"), JSON.stringify({ port: 4001, modelAliases: { echo: "mock/echo" } }));
+  await writeFile(join(xdg, "cli2api", "config.json"), JSON.stringify({
+    port: 4000,
+    modelAliases: { fast: "mock/slow" },
+    openRouter: { catalogMode: "mirror", modelRoutes: { "openai/test": { adapter: "mock", model: "slow" } } },
+  }));
+  await writeFile(join(cwd, ".cli2api.json"), JSON.stringify({
+    port: 4001,
+    modelAliases: { echo: "mock/echo" },
+    openRouter: { catalogMode: "runnable", modelRoutes: { "anthropic/test": { adapter: "mock", model: "echo" } } },
+  }));
   const loaded = await loadConfig({ cwd, env: { XDG_CONFIG_HOME: xdg } });
   assert.equal(loaded.port, 4001);
   assert.deepEqual(loaded.modelAliases, { fast: "mock/slow", echo: "mock/echo" });
+  assert.equal(loaded.openRouter?.catalogMode, "runnable");
+  assert.deepEqual(loaded.openRouter?.modelRoutes, {
+    "openai/test": { adapter: "mock", model: "slow" },
+    "anthropic/test": { adapter: "mock", model: "echo" },
+  });
   assert.deepEqual(withoutConfigArg(["node", "cli2api", "models", "--config", "x.json", "--json"]), ["node", "cli2api", "models", "--json"]);
 }
 
@@ -187,4 +255,5 @@ toolAndSessionContracts();
 await configContract();
 await timeoutContract();
 await registryContract();
+await openRouterCatalogContract();
 console.log("adapter contracts ok");

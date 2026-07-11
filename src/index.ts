@@ -42,6 +42,7 @@ function buildRegistry(opts: RegistryCliOptions) {
   return createRegistry({
     defaultAdapter: isAdapterId(defaultAdapter) ? defaultAdapter : "mock",
     modelAliases: loadedConfig.modelAliases,
+    modelRoutes: loadedConfig.openRouter?.modelRoutes,
     codex: {
       binary: opts.codexBin ?? env("CLI2API_CODEX_BIN") ?? loadedConfig.binaries?.codex ?? "codex",
       cwd: opts.cwd ?? env("CLI2API_CWD") ?? loadedConfig.cwd,
@@ -85,8 +86,13 @@ program
   .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
   .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
   .option("--cwd <dir>", "Working directory for CLI adapters", env("CLI2API_CWD") ?? loadedConfig.cwd)
+  .option("--openrouter-catalog <mode>", "OpenRouter model catalog: runnable|mirror", env("CLI2API_OPENROUTER_CATALOG") ?? loadedConfig.openRouter?.catalogMode ?? "runnable")
   .option("-v, --verbose", "Log requests", false)
   .action(async (opts) => {
+    if (opts.openrouterCatalog !== "runnable" && opts.openrouterCatalog !== "mirror") {
+      console.error(`Invalid --openrouter-catalog value: ${opts.openrouterCatalog}. Expected runnable or mirror.`);
+      process.exit(1);
+    }
     const registry = buildRegistry({
       adapter: opts.adapter,
       codexBin: opts.codexBin,
@@ -107,6 +113,15 @@ program
         adapter: opts.adapter,
         token,
         verbose: opts.verbose,
+        openRouter: {
+          defaultModel: loadedConfig.openRouter?.defaultModel,
+          mode: opts.openrouterCatalog === "mirror" ? "mirror" : "runnable",
+          annotateAvailability: loadedConfig.openRouter?.annotateAvailability ?? true,
+          metadataUrl: loadedConfig.openRouter?.metadataUrl,
+          metadataTtlSeconds: loadedConfig.openRouter?.metadataTtlSeconds,
+          metadataCachePath: loadedConfig.openRouter?.metadataCachePath,
+          apiKey: env("OPENROUTER_API_KEY"),
+        },
       });
 
       const base = `http://${server.host}:${server.port}`;
@@ -116,6 +131,7 @@ program
       console.error(`  health:   ${base}/health`);
       console.error(`  models:   ${base}/v1/models`);
       console.error(`  chat:     ${base}/v1/chat/completions`);
+      console.error(`  openrouter: ${base}/api/v1  (catalog: ${opts.openrouterCatalog})`);
       if (!tokenProvided) {
         console.error(`  token:    ${token}  (generated for this session — set CLI2API_TOKEN to pin it)`);
       }

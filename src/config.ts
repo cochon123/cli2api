@@ -4,6 +4,10 @@ import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
 const adapterId = z.enum(["mock", "codex", "opencode", "cursor", "claude"]);
+const modelRoute = z.object({
+  adapter: adapterId,
+  model: z.string().min(1),
+}).strict();
 
 const configSchema = z.object({
   defaultAdapter: adapterId.optional(),
@@ -11,6 +15,15 @@ const configSchema = z.object({
   token: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
   modelAliases: z.record(z.string().min(1)).optional(),
+  openRouter: z.object({
+    defaultModel: z.string().min(1).optional(),
+    catalogMode: z.enum(["runnable", "mirror"]).optional(),
+    annotateAvailability: z.boolean().optional(),
+    modelRoutes: z.record(modelRoute).optional(),
+    metadataUrl: z.string().url().optional(),
+    metadataTtlSeconds: z.number().int().min(60).optional(),
+    metadataCachePath: z.string().min(1).optional(),
+  }).strict().optional(),
   binaries: z.object({
     codex: z.string().min(1).optional(),
     opencode: z.string().min(1).optional(),
@@ -53,6 +66,11 @@ function mergeConfig(base: Cli2ApiConfig, next: Cli2ApiConfig): Cli2ApiConfig {
     ...base,
     ...next,
     modelAliases: { ...base.modelAliases, ...next.modelAliases },
+    openRouter: base.openRouter || next.openRouter ? {
+      ...base.openRouter,
+      ...next.openRouter,
+      modelRoutes: { ...base.openRouter?.modelRoutes, ...next.openRouter?.modelRoutes },
+    } : undefined,
     binaries: { ...base.binaries, ...next.binaries },
   };
 }
