@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>cli2api — Turn your coding CLI into an OpenAI API</title>
-  <meta name="description" content="Local OpenAI- and OpenRouter-compatible gateway for Codex, OpenCode, Cursor Agent, and Claude Code. One env swap. Localhost only." />
+  <title>cli2api — Seven coding CLIs, one local API</title>
+  <meta name="description" content="Local OpenAI, Anthropic, and OpenRouter-compatible gateway for seven coding CLIs. One command. Loopback only." />
   <meta property="og:title" content="cli2api" />
-  <meta property="og:description" content="Point any OpenAI SDK at localhost and run against the coding CLI you already use." />
+  <meta property="og:description" content="Point OpenAI, Anthropic, or OpenRouter clients at the coding CLI you already use." />
   <meta property="og:type" content="website" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -704,13 +704,13 @@
     <header class="hero">
       <div class="hero-stage">
         <p class="brand-hero">cli<em>2</em>api</p>
-        <h1 class="headline">Turn your coding CLI into an OpenAI API</h1>
+        <h1 class="headline">Seven coding CLIs. One local API.</h1>
         <p class="lede">
-          Point any OpenAI SDK at localhost and run against Codex, OpenCode, Cursor Agent, or Claude Code — with the login you already have.
+          Point OpenAI, Anthropic, or OpenRouter clients at Codex, OpenCode, Cursor, Claude, Gemini, Qwen, or Copilot — with the login you already have.
         </p>
         <div class="cta-stack">
           <div class="install-chip">
-            <code><span class="prompt">$</span><span id="install-cmd">npm i -g cli2api</span></code>
+            <code><span class="prompt">$</span><span id="install-cmd">npm i -g @cochon123/cli2api</span></code>
             <button class="copy-btn" type="button" id="copy-install" aria-label="Copy install command" title="Copy">
               <svg class="icon-copy" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/>
@@ -740,9 +740,9 @@
             <span class="preview-title">Terminal — cli2api — 80×24</span>
           </div>
           <div class="preview-main">
-            <div class="term-line"><span class="prompt">$</span> <span class="cmd">cli2api serve --adapter codex</span></div>
-            <div class="term-line"><span class="out">bound to http://127.0.0.1:3927</span></div>
-            <div class="term-line"><span class="out">token </span><span class="hl">dev-secret</span></div>
+            <div class="term-line"><span class="prompt">$</span> <span class="cmd">cli2api serve --adapter auto --port 0 --json</span></div>
+            <div class="term-line"><span class="out">{"ready":true,"adapter":"codex","base_url":"http://127.0.0.1:43127",…}</span></div>
+            <div class="term-line"><span class="out">token </span><span class="hl">generated per start</span></div>
             <div class="env-block">
               <div class="term-line"><span class="dim"># one env swap — keep your SDK</span></div>
               <div class="term-line"><span class="cmd">OPENAI_BASE_URL=</span><span class="anim-value cloud" id="anim-url">https://api.openai.com/v1</span><span class="cursor" id="cursor-url"></span></div>
@@ -757,22 +757,22 @@
     <section id="how">
       <div class="reveal">
         <p class="section-label">How it works</p>
-        <h2 class="section-title">One env swap. Same clients.</h2>
+        <h2 class="section-title">One command. Same clients.</h2>
         <p class="section-copy">
-          Coding CLIs already handle login, quotas, and tool loops — they just speak terminal. cli2api is the HTTP adapter so benchmarks, evals, and side projects can talk to them.
+          Coding CLIs already handle login, quotas, and tool loops — they just speak terminal. cli2api gives benchmarks, agents, and SDKs one authenticated local API.
         </p>
         <div class="steps">
           <div class="step">
-            <h3>Start the gateway</h3>
-            <p>Run <code>cli2api serve</code> on loopback. It prints a bearer token and binds to <code>127.0.0.1</code> only.</p>
+            <h3>Wrap your command</h3>
+            <p><code>cli2api run --adapter auto -- …</code> starts an ephemeral gateway, injects client variables, and cleans up.</p>
           </div>
           <div class="step">
-            <h3>Point your client</h3>
-            <p>Set <code>OPENAI_BASE_URL</code> to the local gateway. Keep your existing OpenAI SDK, litellm harness, or fetch calls.</p>
+            <h3>Or keep it running</h3>
+            <p><code>serve --port 0 --json</code> returns one readiness object with URLs, token, adapter, health, model, and workspace.</p>
           </div>
           <div class="step">
-            <h3>Hit a real CLI</h3>
-            <p>Requests route to Codex, OpenCode, Cursor Agent, or Claude Code — streaming, tools, and session resume included.</p>
+            <h3>Keep your client</h3>
+            <p>Use OpenAI Chat or Responses, Anthropic Messages, or OpenRouter aliases — including streaming, tools, and sessions.</p>
           </div>
         </div>
       </div>
@@ -783,13 +783,16 @@
         <p class="section-label">Adapters</p>
         <h2 class="section-title">The CLIs you already use</h2>
         <p class="section-copy">
-          Model ids use <code style="font-family:var(--mono);font-size:0.9em;color:var(--ok)">adapter/model</code> routing. OpenAI and OpenRouter shapes both work.
+          Model ids use <code style="font-family:var(--mono);font-size:0.9em;color:var(--ok)">adapter/model</code> routing. OpenAI Chat/Responses, Anthropic Messages, and OpenRouter aliases all work.
         </p>
         <ul class="adapters">
           <li>Codex<span>codex/default</span></li>
           <li>OpenCode<span>opencode/…</span></li>
           <li>Cursor Agent<span>cursor/…</span></li>
           <li>Claude Code<span>claude/default</span></li>
+          <li>Gemini CLI<span>gemini/default</span></li>
+          <li>Qwen Code<span>qwen/default</span></li>
+          <li>GitHub Copilot<span>copilot/default</span></li>
         </ul>
       </div>
     </section>
@@ -800,7 +803,7 @@
           <p class="section-label">Local by design</p>
           <h2 class="section-title">Not a cloud proxy</h2>
           <p class="section-copy" style="margin-bottom:0">
-            Your CLI credentials stay on your machine. cli2api is boring infrastructure — a loopback gateway, not a multi-tenant product.
+            Your CLI credentials stay on your machine. Adapters start in a fresh empty directory with restrictive policies, including a cli2api-owned deny-by-default OpenCode agent. Processes still run as your user; this is not an OS sandbox.
           </p>
         </div>
         <ul class="safety-list">
@@ -814,7 +817,7 @@
           </li>
           <li>
             <span class="tick" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M2 6.5 4.8 9.2 10 3"/></svg></span>
-            <span><strong>Read-only sandbox</strong> — safe defaults for child CLIs</span>
+            <span><strong>Fresh empty workspace</strong> — project files require explicit <code>--project</code> or <code>--cwd</code></span>
           </li>
           <li>
             <span class="tick" aria-hidden="true"><svg viewBox="0 0 12 12"><path d="M2 6.5 4.8 9.2 10 3"/></svg></span>
@@ -829,18 +832,16 @@
         <p class="section-label">Install</p>
         <h2 class="section-title">Up in thirty seconds</h2>
         <p class="section-copy">
-          From the project root — mock adapter first, then swap in a real CLI when you’re ready.
+          Install once — check available CLIs, then wrap any environment-aware client without copying a token or port.
         </p>
         <div class="install-block">
-          <pre><span class="comment"># start the gateway</span>
-<span class="accent">$</span> <span class="cmd">npm install</span>
-<span class="accent">$</span> <span class="cmd">npm run serve -- --adapter mock --port 3927</span>
+          <pre><span class="comment"># install and inspect available CLIs</span>
+<span class="accent">$</span> <span class="cmd">npm i -g @cochon123/cli2api</span>
+<span class="accent">$</span> <span class="cmd">cli2api doctor --json</span>
 
-<span class="comment"># point your client</span>
-<span class="cmd">OPENAI_BASE_URL=http://127.0.0.1:3927/v1</span>
-<span class="cmd">OPENAI_API_KEY=&lt;token from serve&gt;</span>
-<span class="cmd">OPENAI_MODEL=mock/echo</span></pre>
-          <p class="copy-hint">MIT · Node 20+ · OpenAI + OpenRouter compatible</p>
+<span class="comment"># temporary authenticated gateway; auto-select a ready CLI</span>
+<span class="accent">$</span> <span class="cmd">cli2api run --adapter auto -- node my-agent.mjs</span></pre>
+          <p class="copy-hint">MIT · Node 20+ · OpenAI + Anthropic + OpenRouter compatible</p>
         </div>
       </div>
     </section>
@@ -849,7 +850,7 @@
       <div class="reveal">
         <h2 class="section-title">Run your harness against the CLI you already trust</h2>
         <p class="section-copy">
-          Benchmarks, evals, and side projects — same API shape, local credentials, no rewrite.
+          Benchmarks, evals, and side projects — familiar API shapes, local credentials, no rewrite.
         </p>
         <div class="final-ctas">
           <a class="btn-primary" href="#install">Get started</a>
@@ -911,9 +912,9 @@
     const cursorKey = document.getElementById("cursor-key");
 
     const CLOUD_URL = "https://api.openai.com/v1";
-    const LOCAL_URL = "http://127.0.0.1:3927/v1";
+    const LOCAL_URL = "http://127.0.0.1:43127/v1";
     const CLOUD_KEY = "sk-proj-••••••••••••";
-    const LOCAL_KEY = "dev-secret";
+    const LOCAL_KEY = "generated-token";
 
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

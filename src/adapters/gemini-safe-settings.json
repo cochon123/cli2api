@@ -1,0 +1,37 @@
+{
+  "hooksConfig": {
+    "enabled": false
+  },
+  "general": {
+    "defaultApprovalMode": "plan",
+    "enableAutoUpdate": false
+  },
+  "security": {
+    "disableYoloMode": true,
+    "disableAlwaysAllow": true,
+    "enablePermanentToolApproval": false,
+    "autoAddToPolicyByDefault": false,
+    "environmentVariableRedaction": {
+      "enabled": true
+    }
+  },
+  "skills": {
+    "enabled": false
+  },
+  "mcp": {
+    "allowed": [],
+    "excluded": ["*"]
+  },
+  "admin": {
+    "secureModeEnabled": true,
+    "extensions": {
+      "enabled": false
+    },
+    "mcp": {
+      "enabled": false
+    },
+    "skills": {
+      "enabled": false
+    }
+  }
+}

@@ -43,10 +43,19 @@ function cachePath(path?: string): string {
 function annotate(
   model: Record<string, unknown>,
   registry: AdapterRegistry,
+  availableAdapters: ReadonlySet<string>,
 ): Record<string, unknown> {
   const id = modelId(model) ?? "";
   const route = registry.modelRoutes[id];
-  const available = Boolean(route) || registry.isExplicitlyRoutable(id);
+  let adapter: string | undefined = route?.adapter;
+  if (!adapter && registry.isExplicitlyRoutable(id)) {
+    try {
+      adapter = registry.resolve(id).id;
+    } catch {
+      adapter = undefined;
+    }
+  }
+  const available = Boolean(adapter && availableAdapters.has(adapter));
   return {
     ...model,
     cli2api: {
@@ -152,18 +161,25 @@ export class OpenRouterCatalog {
   }
 
   async list(query?: URLSearchParams): Promise<Array<Record<string, unknown>>> {
-    const local = await this.registry.listModels();
+    if (this.mode === "mirror" && !this.annotateAvailability) {
+      const upstream = (await this.upstream())?.data ?? [];
+      return filterModels(upstream, query);
+    }
+    const availableAdapters = (this.mode === "runnable" || this.annotateAvailability)
+      ? await this.registry.availableAdapterIds()
+      : new Set<string>();
     const shouldLoadUpstream = this.mode === "mirror" || Object.keys(this.registry.modelRoutes).length > 0;
     const upstreamSnapshot = shouldLoadUpstream ? await this.upstream() : undefined;
     const upstream = upstreamSnapshot?.data ?? [];
 
     if (this.mode === "mirror") {
       const models = this.annotateAvailability
-        ? upstream.map((model) => annotate(model, this.registry))
+        ? upstream.map((model) => annotate(model, this.registry, availableAdapters))
         : upstream;
       return filterModels(models, query);
     }
 
+    const local = await this.registry.listRunnableModels();
     const upstreamById = new Map(upstream.map((model) => [modelId(model), model]));
     const seen = new Set<string>();
     const models = local.flatMap((fallback: ModelInfo) => {
@@ -174,7 +190,7 @@ export class OpenRouterCatalog {
         ? { ...actual, supported_parameters: LOCALLY_SUPPORTED_PARAMETERS.filter((parameter) =>
             Array.isArray(actual.supported_parameters) && actual.supported_parameters.includes(parameter)) }
         : { ...fallback, supported_parameters: LOCALLY_SUPPORTED_PARAMETERS };
-      return [this.annotateAvailability ? annotate(merged, this.registry) : merged];
+      return [this.annotateAvailability ? annotate(merged, this.registry, availableAdapters) : merged];
     });
     return filterModels(models, query);
   }

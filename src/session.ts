@@ -15,6 +15,7 @@ export class SessionStore {
 
   get(key: string | undefined, adapter: string): string | undefined {
     if (!key) return undefined;
+    if (Buffer.byteLength(key) > 512) return undefined;
     const record = this.records.get(key);
     if (!record) return undefined;
     if (Date.now() - record.touchedAt > this.ttlMs) {
@@ -27,8 +28,22 @@ export class SessionStore {
     return record.nativeId;
   }
 
+  /** Atomically move a response-id mapping so native transcripts stay linear. */
+  move(from: string | undefined, to: string | undefined, adapter: string): string | undefined {
+    const value = this.get(from, adapter);
+    if (!value || !from || !to) return undefined;
+    this.records.delete(from);
+    this.set(to, adapter, value);
+    return value;
+  }
+
+  delete(key: string | undefined): void {
+    if (key) this.records.delete(key);
+  }
+
   set(key: string | undefined, adapter: string, nativeId: string): void {
     if (!key || !nativeId) return;
+    if (Buffer.byteLength(key) > 512 || Buffer.byteLength(nativeId) > 4_096) return;
     this.records.delete(key);
     this.records.set(key, { adapter, nativeId, touchedAt: Date.now() });
     while (this.records.size > this.maxEntries) {

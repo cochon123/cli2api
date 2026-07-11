@@ -18,7 +18,7 @@ const DEFAULT_MODELS = [
 ];
 
 /** Delay between fake-streamed content words (ms). */
-const CONTENT_WORD_DELAY_MS = 28;
+const CONTENT_WORD_DELAY_MS = 0;
 
 export interface CodexAdapterOptions {
   /** Binary name or path (default: codex) */
@@ -67,6 +67,18 @@ export async function* fakeStreamWords(
   signal?: AbortSignal,
   channel: "content" | "reasoning" = "content",
 ): AsyncGenerator<ChatEvent> {
+  if (delayMs <= 0) {
+    // Avoid thousands of tiny SSE writes while still yielding incremental
+    // chunks to clients that requested a stream.
+    for (let offset = 0; offset < text.length; offset += 256) {
+      if (signal?.aborted) {
+        yield { type: "error", message: "Aborted", code: "abort" };
+        return;
+      }
+      yield { type: "delta", text: text.slice(offset, offset + 256), channel };
+    }
+    return;
+  }
   const parts = text.match(/\S+\s*|\s+/g) ?? [text];
   for (const part of parts) {
     if (signal?.aborted) {
@@ -328,6 +340,7 @@ function buildExecArgs(
   const args = req.nativeSessionId
     ? ["exec", "resume", "--json"]
     : ["exec", "--json", "-s", sandbox];
+  if (!req.nativeSessionId && !req.sessionId) args.push("--ephemeral");
   if (skipGitRepoCheck) args.push("--skip-git-repo-check");
   if (req.nativeSessionId) args.push("-c", `sandbox_mode=\"${sandbox}\"`);
   // Surface reasoning *summaries* on the JSONL stream (effort alone is not enough).
@@ -399,6 +412,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
       let pendingDone: (ChatEvent & { type: "done" }) | null = null;
       let exitCode: number | null = null;
       let timedOut = false;
+      let outputLimitExceeded = false;
       let stderr = "";
 
       try {
@@ -406,7 +420,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
           cwd: opts.cwd,
           timeoutMs,
           signal,
-          inheritEnv: ["CODEX_HOME"],
+          inheritEnv: ["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"],
         })) {
           if (signal.aborted) {
             yield { type: "error", message: "Aborted", code: "abort" };
@@ -453,6 +467,7 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
           } else if (pev.type === "exit") {
             exitCode = pev.code;
             timedOut = pev.timedOut;
+            outputLimitExceeded = pev.outputLimitExceeded;
             stderr = pev.stderr;
           }
         }
@@ -464,6 +479,11 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
 
       if (timedOut) {
         yield { type: "error", message: `codex timed out after ${timeoutMs}ms`, code: "timeout" };
+        return;
+      }
+
+      if (outputLimitExceeded) {
+        yield { type: "error", message: "codex exceeded the 8 MiB raw process output safety limit", code: "output_limit" };
         return;
       }
 
@@ -528,7 +548,14 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
 
       let version: string | undefined;
       if (path) {
-        const ver = await runCommand(path, ["--version"], { timeoutMs: 8_000 });
+        const [ver, help, auth] = await Promise.all([
+          runCommand(path, ["--version"], { timeoutMs: 8_000 }),
+          runCommand(path, ["exec", "--help"], { timeoutMs: 8_000 }),
+          runCommand(path, ["login", "status"], {
+            timeoutMs: 8_000,
+            inheritEnv: ["CODEX_HOME", "OPENAI_API_KEY", "CODEX_API_KEY"],
+          }),
+        ]);
         version = (ver.stdout || ver.stderr).trim();
         checks.push({
           name: "version",
@@ -536,12 +563,22 @@ export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
           detail: version || `exit ${ver.code}`,
         });
 
-        const help = await runCommand(path, ["exec", "--help"], { timeoutMs: 8_000 });
-        const hasJson = /--json/.test(help.stdout + help.stderr);
+        const helpOutput = help.stdout + help.stderr;
+        const hasJson = /--json/.test(helpOutput);
         checks.push({
           name: "exec-json-flag",
           ok: hasJson,
           detail: hasJson ? "codex exec --json supported" : "codex exec --json not found in help",
+        });
+        checks.push({
+          name: "restrictive-flags",
+          ok: /--sandbox/.test(helpOutput) && /--ephemeral/.test(helpOutput),
+          detail: "read-only sandbox and stateless execution flags",
+        });
+        checks.push({
+          name: "authentication",
+          ok: auth.code === 0,
+          detail: (auth.stdout || auth.stderr).trim() || `exit ${auth.code}`,
         });
       }
 

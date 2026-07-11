@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
 
-const adapterId = z.enum(["mock", "codex", "opencode", "cursor", "claude"]);
+const adapterId = z.enum(["mock", "codex", "opencode", "cursor", "claude", "gemini", "qwen", "copilot"]);
 const modelRoute = z.object({
   adapter: adapterId,
   model: z.string().min(1),
@@ -14,6 +14,9 @@ const configSchema = z.object({
   port: z.number().int().min(1).max(65535).optional(),
   token: z.string().min(1).optional(),
   cwd: z.string().min(1).optional(),
+  maxConcurrency: z.number().int().min(1).max(64).optional(),
+  maxQueue: z.number().int().min(0).max(10_000).optional(),
+  maxBodyBytes: z.number().int().min(1_024).max(100 * 1_048_576).optional(),
   modelAliases: z.record(z.string().min(1)).optional(),
   openRouter: z.object({
     defaultModel: z.string().min(1).optional(),
@@ -29,6 +32,9 @@ const configSchema = z.object({
     opencode: z.string().min(1).optional(),
     cursor: z.string().min(1).optional(),
     claude: z.string().min(1).optional(),
+    gemini: z.string().min(1).optional(),
+    qwen: z.string().min(1).optional(),
+    copilot: z.string().min(1).optional(),
   }).optional(),
 }).strict();
 
@@ -84,13 +90,15 @@ export async function loadConfig(opts: {
   const cwd = resolve(opts.cwd ?? process.cwd());
   const xdg = env.XDG_CONFIG_HOME || join(homedir(), ".config");
   const explicitRaw = opts.explicitPath || env.CLI2API_CONFIG;
+  const explicitPath = explicitRaw
+    ? (isAbsolute(explicitRaw) ? explicitRaw : resolve(cwd, explicitRaw))
+    : undefined;
   const candidates: Array<{ path: string; required: boolean }> = [
     { path: join(xdg, "cli2api", "config.json"), required: false },
-    { path: join(cwd, ".cli2api.json"), required: false },
   ];
   if (explicitRaw) {
     candidates.push({
-      path: isAbsolute(explicitRaw) ? explicitRaw : resolve(cwd, explicitRaw),
+      path: explicitPath!,
       required: true,
     });
   }
@@ -110,6 +118,7 @@ export async function loadConfig(opts: {
 export function configPathFromArgv(argv: string[]): string | undefined {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === "--") break;
     if (arg === "--config") return argv[index + 1];
     if (arg.startsWith("--config=")) return arg.slice("--config=".length);
   }
@@ -121,6 +130,10 @@ export function withoutConfigArg(argv: string[]): string[] {
   const result: string[] = [];
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === "--") {
+      result.push(...argv.slice(index));
+      break;
+    }
     if (arg === "--config") {
       index += 1;
       continue;

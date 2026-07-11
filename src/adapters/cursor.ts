@@ -16,11 +16,6 @@ export interface CursorAdapterOptions {
   binary?: string;
   cwd?: string;
   timeoutMs?: number;
-  extraArgs?: string[];
-  /** Cursor read-only mode. */
-  mode?: "ask" | "plan";
-  /** Headless Cursor requires explicit workspace trust. */
-  trust?: boolean;
 }
 
 export type CursorParsedLine =
@@ -93,15 +88,39 @@ export function parseCursorLine(line: string): CursorParsedLine {
   return { kind: "ignore" };
 }
 
+/**
+ * Cursor Ask is the vendor's no-change mode. Keep these safety arguments
+ * fixed: a caller-controlled trailing flag could otherwise replace the mode,
+ * disable the sandbox request, or approve additional tools/MCP servers.
+ */
+export function buildCursorArgs(req: NormalizedChatRequest): string[] {
+  const args = [
+    "-p",
+    "--output-format",
+    "stream-json",
+    "--stream-partial-output",
+    "--mode",
+    "ask",
+    "--sandbox",
+    "enabled",
+    // Required for reliable headless operation. With cli2api's default empty
+    // cwd this acknowledges only a disposable directory; --project/--cwd is
+    // an explicit decision to trust the selected workspace.
+    "--trust",
+  ];
+  if (req.nativeSessionId) args.push("--resume", req.nativeSessionId);
+  if (req.modelLocal && req.modelLocal !== "default") args.push("--model", req.modelLocal);
+  args.push(requestToPrompt(req));
+  return args;
+}
+
 export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
   const binary = opts.binary ?? "cursor-agent";
   const timeoutMs = opts.timeoutMs ?? 180_000;
-  const mode = opts.mode ?? "ask";
-  const trust = opts.trust ?? true;
 
   return {
     id: "cursor",
-    description: "Cursor Agent CLI via native partial stream-json (read-only ask mode)",
+    description: "Cursor Agent CLI via native partial stream-json (Ask mode; sandbox requested)",
 
     async listModels(): Promise<ModelInfo[]> {
       return DEFAULT_MODELS.map((model) => ({
@@ -124,21 +143,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
         return;
       }
 
-      const args = [
-        "-p",
-        "--output-format",
-        "stream-json",
-        "--stream-partial-output",
-        "--mode",
-        mode,
-        "--sandbox",
-        "enabled",
-      ];
-      if (trust) args.push("--trust");
-      if (req.nativeSessionId) args.push("--resume", req.nativeSessionId);
-      if (req.modelLocal && req.modelLocal !== "default") args.push("--model", req.modelLocal);
-      if (opts.extraArgs?.length) args.push(...opts.extraArgs);
-      args.push(requestToPrompt(req));
+      const args = buildCursorArgs(req);
 
       let sawContent = false;
       let sawPartialContent = false;
@@ -146,6 +151,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
       let usage: ChatCompletionResponse["usage"];
       let exitCode: number | null = null;
       let timedOut = false;
+      let outputLimitExceeded = false;
       let stderr = "";
 
       try {
@@ -181,6 +187,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
           } else if (event.type === "exit") {
             exitCode = event.code;
             timedOut = event.timedOut;
+            outputLimitExceeded = event.outputLimitExceeded;
             stderr = event.stderr;
           }
         }
@@ -200,6 +207,8 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
 
       if (timedOut) {
         yield { type: "error", message: `cursor-agent timed out after ${timeoutMs}ms`, code: "timeout" };
+      } else if (outputLimitExceeded) {
+        yield { type: "error", message: "cursor-agent exceeded the 8 MiB raw process output safety limit", code: "output_limit" };
       } else if (signal.aborted) {
         yield { type: "error", message: "Aborted", code: "abort" };
       } else if (exitCode !== 0) {
@@ -225,8 +234,9 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
         details: {
           binary: path,
           version: (version.stdout || version.stderr).trim() || "not emitted without a TTY",
-          mode,
-          sandbox: "enabled",
+          mode: "ask",
+          sandbox: "requested",
+          workspaceTrust: "auto-acknowledged",
         },
         message: version.code === 0 ? "cursor-agent available" : "cursor-agent --version failed",
       };
@@ -237,15 +247,31 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
       const checks: DoctorReport["checks"] = [{ name: "binary-on-path", ok: Boolean(path), detail: path ?? `missing: ${binary}` }];
       let version: string | undefined;
       if (path) {
-        const result = await runCommand(path, ["--version"], { timeoutMs: 8_000 });
+        const [result, help, auth] = await Promise.all([
+          runCommand(path, ["--version"], { timeoutMs: 8_000 }),
+          runCommand(path, ["--help"], { timeoutMs: 8_000 }),
+          runCommand(path, ["status"], { timeoutMs: 8_000, inheritEnv: ["CURSOR_API_KEY"] }),
+        ]);
         version = (result.stdout || result.stderr).trim() || undefined;
         checks.push({
           name: "version",
           ok: result.code === 0,
           detail: version ?? (result.code === 0 ? "available; CLI emitted no version without a TTY" : `exit ${result.code}`),
         });
+        const output = help.stdout + help.stderr;
+        checks.push({
+          name: "structured-sandbox-mode",
+          ok: ["stream-json", "--stream-partial-output", "--mode", "--sandbox", "--trust"]
+            .every((flag) => output.includes(flag)) && /\bask\b/i.test(output),
+          detail: "partial JSON stream; Ask support; sandbox requested; workspace trust auto-acknowledged (runtime enforcement is not proven)",
+        });
+        checks.push({
+          name: "authentication",
+          ok: auth.code === 0 && !/not authenticated/i.test(auth.stdout + auth.stderr),
+          detail: (auth.stdout || auth.stderr).trim() || `exit ${auth.code}`,
+        });
       }
-      checks.push({ name: "restrictive-default", ok: mode === "ask" || mode === "plan", detail: `mode=${mode}; sandbox=enabled` });
+      checks.push({ name: "restrictive-default", ok: true, detail: "mode=ask is fixed; sandbox requested; unsafe trailing overrides are not accepted" });
       return { adapter: "cursor", ok: checks.every((check) => check.ok), binary: path ?? binary, version, checks };
     },
   };

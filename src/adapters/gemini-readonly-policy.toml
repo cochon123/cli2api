@@ -1,0 +1,14 @@
+# cli2api-owned admin-tier policy. Deny unknown/custom tools by default so a
+# user's higher-priority-than-built-in Plan policy cannot re-enable mutation.
+[[rule]]
+toolName = "*"
+decision = "deny"
+priority = 900
+denyMessage = "cli2api exposes Gemini CLI as a read-only inference adapter"
+
+# Preserve only documented local read/search tools. Higher priority makes these
+# exceptions win over the wildcard deny within the same admin policy tier.
+[[rule]]
+toolName = ["glob", "grep_search", "search_file_content", "list_directory", "read_file", "read_many_files", "get_internal_docs"]
+decision = "allow"
+priority = 999

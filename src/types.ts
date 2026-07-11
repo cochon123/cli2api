@@ -130,7 +130,7 @@ export interface ModelInfo {
 }
 
 export interface ModelRoute {
-  adapter: "mock" | "codex" | "opencode" | "cursor" | "claude";
+  adapter: "mock" | "codex" | "opencode" | "cursor" | "claude" | "gemini" | "qwen" | "copilot";
   model: string;
 }
 

@@ -15,6 +15,50 @@ export interface Adapter {
   doctor(): Promise<DoctorReport>;
 }
 
+export const MAX_RESPONSE_BYTES = 4 * 1_048_576;
+export const MAX_RESPONSE_EVENTS = 10_000;
+
+/** Bound cumulative model-controlled output before any protocol buffers it. */
+export async function* limitChatEvents(
+  events: AsyncIterable<ChatEvent>,
+  maxBytes = MAX_RESPONSE_BYTES,
+  maxEvents = MAX_RESPONSE_EVENTS,
+): AsyncIterable<ChatEvent> {
+  let bytes = 0;
+  let count = 0;
+  for await (const event of events) {
+    count += 1;
+    if (count > maxEvents) {
+      yield {
+        type: "error",
+        message: `CLI response exceeds the ${maxEvents}-event safety limit`,
+        code: "event_limit",
+      };
+      return;
+    }
+    if (event.type === "delta") {
+      bytes += Buffer.byteLength(event.text);
+    } else if (event.type === "tool_call") {
+      bytes += Buffer.byteLength(event.call.id)
+        + Buffer.byteLength(event.call.function.name)
+        + Buffer.byteLength(event.call.function.arguments);
+    } else if (event.type === "session") {
+      bytes += Buffer.byteLength(event.id);
+    } else if (event.type === "error") {
+      bytes += Buffer.byteLength(event.message) + (event.code ? Buffer.byteLength(event.code) : 0);
+    }
+    if (bytes > maxBytes) {
+      yield {
+        type: "error",
+        message: `CLI response exceeds the ${maxBytes}-byte safety limit`,
+        code: "output_limit",
+      };
+      return;
+    }
+    yield event;
+  }
+}
+
 export function collectChatText(events: AsyncIterable<ChatEvent>): Promise<{
   text: string;
   reasoning: string;

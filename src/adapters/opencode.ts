@@ -10,16 +10,78 @@ import type {
 import { requestToPrompt } from "../protocol/openai.js";
 import { runCommand, runCommandLines, which } from "../util/process.js";
 import { fakeStreamWords } from "./codex.js";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 
 const DEFAULT_MODELS = ["default", "deepseek-v4-flash-free"];
-const DEFAULT_WORD_DELAY_MS = 28;
+const DEFAULT_WORD_DELAY_MS = 0;
+const READ_ONLY_PERMISSIONS = {
+  "*": "deny",
+  read: "allow",
+  glob: "allow",
+  grep: "allow",
+  list: "allow",
+} as const;
+let safeConfigHome: string | undefined;
+
+function isolatedConfigHome(): string {
+  if (!safeConfigHome) {
+    safeConfigHome = mkdtempSync(join(tmpdir(), "cli2api-opencode-config-"));
+    process.once("exit", () => {
+      if (safeConfigHome) rmSync(safeConfigHome, { recursive: true, force: true });
+    });
+  }
+  return safeConfigHome;
+}
+
+function safeConfig(agent: string): string {
+  return JSON.stringify({
+    autoupdate: false,
+    share: "disabled",
+    snapshot: false,
+    plugin: [],
+    instructions: [],
+    permission: READ_ONLY_PERMISSIONS,
+    agent: {
+      [agent]: {
+        description: "cli2api read-only inference adapter",
+        mode: "primary",
+        prompt: "Answer the supplied request. You are read-only and must not invoke mutating, shell, network, or subagent tools.",
+        steps: 4,
+        permission: READ_ONLY_PERMISSIONS,
+      },
+    },
+  });
+}
+
+function storedCredentialStatus(): { ok: boolean; detail: string } {
+  const home = homedir();
+  const candidates = [
+    process.env.XDG_DATA_HOME ? join(process.env.XDG_DATA_HOME, "opencode", "auth.json") : undefined,
+    join(home, ".local", "share", "opencode", "auth.json"),
+    join(home, "Library", "Application Support", "opencode", "auth.json"),
+    process.env.APPDATA ? join(process.env.APPDATA, "opencode", "auth.json") : undefined,
+    process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, "opencode", "auth.json") : undefined,
+  ].filter((path): path is string => Boolean(path));
+  for (const path of candidates) {
+    try {
+      const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
+      const count = value && typeof value === "object" && !Array.isArray(value) ? Object.keys(value).length : 0;
+      if (count > 0) return { ok: true, detail: `${count} stored credential${count === 1 ? "" : "s"}` };
+    } catch {
+      // Try the next platform-specific data location.
+    }
+  }
+  return { ok: false, detail: "no stored OpenCode credentials found" };
+}
 
 export interface OpenCodeAdapterOptions {
   binary?: string;
   cwd?: string;
   timeoutMs?: number;
   extraArgs?: string[];
-  /** OpenCode agent. `plan` is the safe, read-only default. */
+  /** OpenCode agent. A cli2api-owned read-only agent is the default. */
   agent?: string;
   contentWordDelayMs?: number;
 }
@@ -101,12 +163,12 @@ function localModel(model: string): string | null {
 export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapter {
   const binary = opts.binary ?? "opencode";
   const timeoutMs = opts.timeoutMs ?? 180_000;
-  const agent = opts.agent ?? "plan";
+  const agent = opts.agent ?? "cli2api";
   const wordDelay = opts.contentWordDelayMs ?? DEFAULT_WORD_DELAY_MS;
 
   return {
     id: "opencode",
-    description: "OpenCode CLI via `opencode run --format json` (plan agent)",
+    description: "OpenCode CLI via `opencode run --format json` (isolated read-only agent)",
 
     async listModels(): Promise<ModelInfo[]> {
       return DEFAULT_MODELS.map((model) => ({
@@ -139,6 +201,7 @@ export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapte
       let sawContent = false;
       let exitCode: number | null = null;
       let timedOut = false;
+      let outputLimitExceeded = false;
       let stderr = "";
       let finishReason: "stop" | "length" | "error" = "stop";
       let usage: ChatCompletionResponse["usage"];
@@ -150,7 +213,19 @@ export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapte
           cwd: opts.cwd,
           timeoutMs,
           signal,
-          inheritEnv: ["OPENCODE_CONFIG", "OPENCODE_CONFIG_DIR", "OPENCODE_CONFIG_CONTENT"],
+          env: {
+            XDG_CONFIG_HOME: isolatedConfigHome(),
+            OPENCODE_CONFIG_DIR: isolatedConfigHome(),
+            OPENCODE_CONFIG_CONTENT: safeConfig(agent),
+            OPENCODE_PERMISSION: JSON.stringify(READ_ONLY_PERMISSIONS),
+            OPENCODE_AUTO_SHARE: "false",
+            OPENCODE_DISABLE_AUTOUPDATE: "true",
+            OPENCODE_DISABLE_DEFAULT_PLUGINS: "true",
+            OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
+            OPENCODE_DISABLE_CLAUDE_CODE: "true",
+            OPENCODE_ENABLE_EXA: "false",
+            OPENCODE_EXPERIMENTAL: "false",
+          },
         })) {
           if (event.type === "stdout_line") {
             const sessionId = openCodeSessionId(event.line);
@@ -180,6 +255,7 @@ export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapte
           } else if (event.type === "exit") {
             exitCode = event.code;
             timedOut = event.timedOut;
+            outputLimitExceeded = event.outputLimitExceeded;
             stderr = event.stderr;
           }
         }
@@ -194,6 +270,8 @@ export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapte
 
       if (timedOut) {
         yield { type: "error", message: `opencode timed out after ${timeoutMs}ms`, code: "timeout" };
+      } else if (outputLimitExceeded) {
+        yield { type: "error", message: "opencode exceeded the 8 MiB raw process output safety limit", code: "output_limit" };
       } else if (signal.aborted) {
         yield { type: "error", message: "Aborted", code: "abort" };
       } else if (exitCode !== 0) {
@@ -226,11 +304,31 @@ export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapte
       const checks: DoctorReport["checks"] = [{ name: "binary-on-path", ok: Boolean(path), detail: path ?? `missing: ${binary}` }];
       let version: string | undefined;
       if (path) {
-        const result = await runCommand(path, ["--version"], { timeoutMs: 8_000 });
+        const [result, rootHelp, runHelp] = await Promise.all([
+          runCommand(path, ["--version"], { timeoutMs: 8_000 }),
+          runCommand(path, ["--help"], { timeoutMs: 8_000 }),
+          runCommand(path, ["run", "--help"], { timeoutMs: 8_000 }),
+        ]);
         version = (result.stdout || result.stderr).trim();
         checks.push({ name: "version", ok: result.code === 0, detail: version || `exit ${result.code}` });
+        const output = rootHelp.stdout + rootHelp.stderr + runHelp.stdout + runHelp.stderr;
+        checks.push({
+          name: "structured-pure-mode",
+          ok: ["--pure", "--format", "--agent"].every((flag) => output.includes(flag)),
+          detail: "JSON events, pinned agent, and external-plugin suppression",
+        });
+        const auth = storedCredentialStatus();
+        checks.push({
+          name: "authentication",
+          ok: auth.ok,
+          detail: auth.detail,
+        });
       }
-      checks.push({ name: "restrictive-default", ok: agent === "plan", detail: `agent=${agent}; external plugins disabled` });
+      checks.push({
+        name: "restrictive-default",
+        ok: agent === "cli2api",
+        detail: `agent=${agent}; inline deny-by-default permissions; external plugins disabled`,
+      });
       return { adapter: "opencode", ok: checks.every((check) => check.ok), binary: path ?? binary, version, checks };
     },
   };

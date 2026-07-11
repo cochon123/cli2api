@@ -137,10 +137,15 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
         return;
       }
 
-      // Official headless flags. Empty --tools disables built-ins; strict MCP plus
-      // the deny rule prevents configured MCP tools from bypassing that restriction.
+      // Official headless flags. Safe mode and empty setting sources suppress
+      // user/project hooks, instructions, skills, plugins, and memory while
+      // preserving normal CLI authentication. Empty --tools plus strict MCP
+      // disables every model-invokable local tool.
       const args = [
         "-p",
+        "--safe-mode",
+        "--setting-sources",
+        "",
         "--output-format",
         "stream-json",
         "--verbose",
@@ -154,6 +159,7 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
         "--strict-mcp-config",
       ];
       if (req.nativeSessionId) args.push("--resume", req.nativeSessionId);
+      if (!req.nativeSessionId && !req.sessionId) args.push("--no-session-persistence");
       if (req.modelLocal && req.modelLocal !== "default") args.push("--model", req.modelLocal);
       if (opts.extraArgs?.length) args.push(...opts.extraArgs);
       args.push(requestToPrompt(req));
@@ -165,6 +171,7 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
       let usage: ChatCompletionResponse["usage"];
       let exitCode: number | null = null;
       let timedOut = false;
+      let outputLimitExceeded = false;
       let stderr = "";
 
       try {
@@ -172,6 +179,13 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
           cwd: opts.cwd,
           timeoutMs,
           signal,
+          env: {
+            CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+            CLAUDE_CODE_DISABLE_CLAUDE_MDS: "1",
+            CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+            CLAUDE_CODE_DISABLE_CRON: "1",
+            DISABLE_AUTOUPDATER: "1",
+          },
           inheritEnv: [
             "CLAUDE_CONFIG_DIR",
             "CLAUDE_CODE_OAUTH_TOKEN",
@@ -211,6 +225,7 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
           } else if (event.type === "exit") {
             exitCode = event.code;
             timedOut = event.timedOut;
+            outputLimitExceeded = event.outputLimitExceeded;
             stderr = event.stderr;
           }
         }
@@ -230,6 +245,8 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
 
       if (timedOut) {
         yield { type: "error", message: `claude timed out after ${timeoutMs}ms`, code: "timeout" };
+      } else if (outputLimitExceeded) {
+        yield { type: "error", message: "claude exceeded the 8 MiB raw process output safety limit", code: "output_limit" };
       } else if (signal.aborted) {
         yield { type: "error", message: "Aborted", code: "abort" };
       } else if (exitCode !== 0) {
@@ -262,11 +279,29 @@ export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
       const checks: DoctorReport["checks"] = [{ name: "binary-on-path", ok: Boolean(path), detail: path ?? `missing: ${binary}` }];
       let version: string | undefined;
       if (path) {
-        const result = await runCommand(path, ["--version"], { timeoutMs: 8_000 });
+        const [result, help, auth] = await Promise.all([
+          runCommand(path, ["--version"], { timeoutMs: 8_000 }),
+          runCommand(path, ["--help"], { timeoutMs: 8_000 }),
+          runCommand(path, ["auth", "status"], {
+            timeoutMs: 8_000,
+            inheritEnv: ["CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"],
+          }),
+        ]);
         version = (result.stdout || result.stderr).trim();
         checks.push({ name: "version", ok: result.code === 0, detail: version || `exit ${result.code}` });
+        const output = help.stdout + help.stderr;
+        checks.push({
+          name: "safe-headless-mode",
+          ok: /--safe-mode/.test(output) && /--setting-sources/.test(output) && /--no-session-persistence/.test(output),
+          detail: "customizations disabled; stateless persistence supported",
+        });
+        checks.push({
+          name: "authentication",
+          ok: auth.code === 0,
+          detail: (auth.stdout || auth.stderr).trim() || `exit ${auth.code}`,
+        });
       }
-      checks.push({ name: "restrictive-default", ok: true, detail: "permission-mode=plan; built-in and MCP tools disabled" });
+      checks.push({ name: "restrictive-default", ok: true, detail: "safe-mode; permission-mode=plan; built-in and MCP tools disabled" });
       return { adapter: "claude", ok: Boolean(path) && checks.every((check) => check.ok), binary: path ?? binary, version, checks };
     },
   };

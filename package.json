@@ -1,11 +1,12 @@
 {
   "name": "@cochon123/cli2api",
-  "version": "0.1.0",
-  "description": "Local OpenAI- and OpenRouter-compatible gateway for coding CLIs",
+  "version": "0.2.0",
+  "description": "Local OpenAI, Anthropic, and OpenRouter API gateway for seven coding CLIs",
   "type": "module",
   "files": [
     "dist",
     "README.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "bin": {
@@ -24,7 +25,7 @@
   },
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc && node scripts/postbuild.mjs",
+    "build": "npm run typecheck && node scripts/build.mjs",
     "start": "node dist/index.js",
     "serve": "tsx src/index.ts serve",
     "doctor": "tsx src/index.ts doctor",
@@ -33,10 +34,13 @@
     "adapters": "tsx src/index.ts adapters",
     "test:smoke": "tsx scripts/smoke.ts",
     "test:adapters": "tsx scripts/adapter-contract.ts",
+    "test:package": "npm run build && node scripts/package-smoke.mjs",
+    "bench": "npm run build && tsx scripts/benchmark.ts",
+    "test": "npm run verify",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm run test:adapters && npm run test:smoke",
     "prepare": "npm run build",
-    "prepublishOnly": "npm run verify"
+    "prepublishOnly": "npm run verify && npm run test:package"
   },
   "engines": {
     "node": ">=20"
@@ -44,22 +48,29 @@
   "keywords": [
     "openai",
     "openrouter",
+    "anthropic",
     "cli",
     "codex",
+    "claude",
+    "gemini",
+    "cursor",
+    "opencode",
+    "qwen",
+    "copilot",
+    "agent",
     "local",
     "llm-gateway"
   ],
   "license": "MIT",
-  "dependencies": {
+  "devDependencies": {
     "@hono/node-server": "^1.14.4",
+    "@types/node": "^24.0.10",
     "ajv": "^8.20.0",
     "commander": "^14.0.0",
+    "esbuild": "^0.28.1",
     "hono": "^4.8.3",
-    "zod": "^3.25.67"
-  },
-  "devDependencies": {
-    "@types/node": "^24.0.10",
     "tsx": "^4.20.3",
-    "typescript": "^5.8.3"
+    "typescript": "^5.8.3",
+    "zod": "^3.25.67"
   }
 }

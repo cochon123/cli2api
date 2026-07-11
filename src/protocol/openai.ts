@@ -35,7 +35,10 @@ export function messagesToPrompt(messages: ChatMessage[]): string {
       : "";
     if (!text && !calls) continue;
     const role = (msg.role || "user").toUpperCase();
-    parts.push(`${role}:\n${text || calls}`);
+    const label = msg.role === "tool" && msg.tool_call_id
+      ? `${role} (${msg.tool_call_id})`
+      : role;
+    parts.push(`${label}:\n${[text, calls].filter(Boolean).join("\n")}`);
   }
   parts.push("ASSISTANT:");
   return parts.join("\n\n");
@@ -134,6 +137,11 @@ export function normalizeChatRequest(body: ChatCompletionRequest): NormalizedCha
   }
   if (body.max_completion_tokens !== undefined && (!Number.isInteger(body.max_completion_tokens) || body.max_completion_tokens < 1)) {
     invalid("`max_completion_tokens` must be a positive integer");
+  }
+  if (body.session_id !== undefined) {
+    if (typeof body.session_id !== "string" || !/^[A-Za-z0-9._:\/-]{1,256}$/.test(body.session_id)) {
+      invalid("`session_id` must be 1-256 URL-safe characters");
+    }
   }
   if (body.include_reasoning !== undefined && typeof body.include_reasoning !== "boolean") {
     invalid("`include_reasoning` must be a boolean");

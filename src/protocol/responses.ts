@@ -54,6 +54,10 @@ export function responsesToChat(body: ResponsesRequest): ChatCompletionRequest {
   if (body.stream !== undefined && typeof body.stream !== "boolean") throw new Error("`stream` must be a boolean");
   if (body.temperature !== undefined && (!Number.isFinite(body.temperature) || body.temperature < 0 || body.temperature > 2)) throw new Error("`temperature` must be between 0 and 2");
   if (body.max_output_tokens !== undefined && (!Number.isInteger(body.max_output_tokens) || body.max_output_tokens < 1)) throw new Error("`max_output_tokens` must be a positive integer");
+  if (body.previous_response_id !== undefined
+    && (typeof body.previous_response_id !== "string" || !/^resp_[0-9a-f]{24}$/.test(body.previous_response_id))) {
+    throw new Error("`previous_response_id` must be a cli2api response id");
+  }
   if (body.tools !== undefined && !Array.isArray(body.tools)) throw new Error("`tools` must be an array");
   for (let index = 0; index < (body.tools?.length ?? 0); index += 1) {
     const tool = body.tools![index];
@@ -143,12 +147,15 @@ export function buildResponse(opts: {
   status?: ResponseObject["status"]; error?: ResponseObject["error"];
 }): ResponseObject {
   const output: Array<Record<string, unknown>> = [];
-  if (opts.reasoning) output.push({ id: `rs_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`, type: "reasoning", summary: [{ type: "summary_text", text: opts.reasoning }] });
-  for (const call of opts.toolCalls ?? []) output.push(functionOutput(call));
-  if (!(opts.toolCalls?.length)) output.push(messageOutput(`msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`, opts.text ?? ""));
+  const status = opts.status ?? "completed";
+  if (status === "completed") {
+    if (opts.reasoning) output.push({ id: `rs_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`, type: "reasoning", summary: [{ type: "summary_text", text: opts.reasoning }] });
+    for (const call of opts.toolCalls ?? []) output.push(functionOutput(call));
+    if (!(opts.toolCalls?.length)) output.push(messageOutput(`msg_${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`, opts.text ?? ""));
+  }
   return {
     id: opts.id, object: "response", created_at: Math.floor(Date.now() / 1000),
-    status: opts.status ?? "completed", model: opts.model, output,
+    status, model: opts.model, output,
     usage: opts.usage ? { input_tokens: opts.usage.prompt_tokens, output_tokens: opts.usage.completion_tokens, total_tokens: opts.usage.total_tokens } : undefined,
     error: opts.error ?? null, incomplete_details: null,
   };

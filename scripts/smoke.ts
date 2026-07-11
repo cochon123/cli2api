@@ -6,9 +6,9 @@
  * 4. Exit non-zero on failure
  */
 import { createRegistry } from "../src/adapters/registry.js";
+import type { Adapter } from "../src/adapters/types.js";
 import { listen } from "../src/server/listen.js";
 
-const PORT = 13927;
 const TOKEN = "smoke-test-token";
 
 function assert(cond: unknown, msg: string): asserts cond {
@@ -19,15 +19,34 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
   return { Authorization: `Bearer ${TOKEN}`, ...extra };
 }
 
+function sessionFixtureAdapter(id: string): Adapter {
+  return {
+    id,
+    description: `${id} session namespace fixture`,
+    async listModels() {
+      return [{ id: `${id}/default`, object: "model", created: 0, owned_by: "test" }];
+    },
+    async *chat(req) {
+      yield { type: "delta", text: req.nativeSessionId ?? `${id}:fresh`, channel: "content" };
+      yield { type: "session", id: `${id}:native` };
+      yield { type: "done", finishReason: "stop" };
+    },
+    async health() { return { ok: true, adapter: id, details: {} }; },
+    async doctor() { return { adapter: id, ok: true, checks: [{ name: "fixture", ok: true }] }; },
+  };
+}
+
 async function main() {
   const registry = createRegistry({
     defaultAdapter: "mock",
     modelRoutes: { "openai/gpt-local-test": { adapter: "mock", model: "echo" } },
   });
+  registry.register(sessionFixtureAdapter("session-a"));
+  registry.register(sessionFixtureAdapter("session-b"));
   const server = await listen({
     registry,
     host: "127.0.0.1",
-    port: PORT,
+    port: 0,
     token: TOKEN,
     verbose: false,
     openRouter: {
@@ -46,11 +65,13 @@ async function main() {
       metadataTtlSeconds: 60,
     },
   });
-  const base = `http://127.0.0.1:${PORT}`;
+  const base = `http://127.0.0.1:${server.port}`;
 
   try {
     const denied = await fetch(`${base}/health`);
     assert(denied.status === 401, "unauthenticated health must be 401");
+    assert(denied.headers.get("cache-control") === "no-store", "security cache header");
+    assert(denied.headers.get("x-content-type-options") === "nosniff", "security content-type header");
 
     const openRouterDenied = await fetch(`${base}/api/v1/models`).then(async (response) => ({
       status: response.status,
@@ -129,6 +150,50 @@ async function main() {
     }).then((r) => r.json());
     assert(openRouterResponse.object === "response" && openRouterResponse.model === "openai/gpt-local-test", "OpenRouter Responses path and public model");
 
+    // Anthropic Messages compatibility and x-api-key authentication.
+    const anthropicDenied = await fetch(`${base}/v1/messages`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "mock/echo", max_tokens: 64, messages: [{ role: "user", content: "x" }] }),
+    }).then(async (response) => ({ status: response.status, body: await response.json() }));
+    assert(anthropicDenied.status === 401 && anthropicDenied.body.type === "error", "Anthropic authentication error shape");
+
+    const anthropic = await fetch(`${base}/v1/messages`, {
+      method: "POST",
+      headers: { "x-api-key": TOKEN, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/echo", max_tokens: 64,
+        system: "Be concise",
+        messages: [{ role: "user", content: "anthropic-ping" }],
+        thinking: { type: "enabled", budget_tokens: 16 },
+      }),
+    }).then((response) => response.json());
+    assert(anthropic.type === "message" && anthropic.role === "assistant", "Anthropic message response");
+    assert(anthropic.content.some((block: { type: string; text?: string }) => block.type === "text" && block.text?.includes("anthropic-ping")), "Anthropic text block");
+    assert(anthropic.content.some((block: { type: string }) => block.type === "thinking"), "Anthropic thinking block");
+
+    const anthropicStream = await fetch(`${base}/v1/messages`, {
+      method: "POST",
+      headers: { "x-api-key": TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: "mock/echo", max_tokens: 64, stream: true, messages: [{ role: "user", content: "anthropic-stream" }] }),
+    }).then((response) => response.text());
+    for (const event of ["message_start", "content_block_start", "content_block_delta", "message_delta", "message_stop"]) {
+      assert(anthropicStream.includes(`event: ${event}`), `missing Anthropic ${event}`);
+    }
+
+    const anthropicTool = await fetch(`${base}/v1/messages`, {
+      method: "POST",
+      headers: { "x-api-key": TOKEN, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "mock/echo", max_tokens: 64,
+        messages: [{ role: "user", content: "lookup weather" }],
+        tools: [{ name: "lookup", input_schema: { type: "object", properties: { input: { type: "string" } }, required: ["input"] } }],
+        tool_choice: { type: "any" },
+      }),
+    }).then((response) => response.json());
+    assert(anthropicTool.stop_reason === "tool_use", "Anthropic tool stop reason");
+    assert(anthropicTool.content.some((block: { type: string; name?: string }) => block.type === "tool_use" && block.name === "lookup"), "Anthropic tool block");
+
     // Non-stream
     const completion = await fetch(`${base}/v1/chat/completions`, {
       method: "POST",
@@ -176,6 +241,16 @@ async function main() {
     assert(toolCompletion.choices?.[0]?.finish_reason === "tool_calls", "tool finish reason");
     assert(toolCompletion.choices?.[0]?.message?.tool_calls?.[0]?.function?.name === "get_weather", "chat tool call");
 
+    const sharedSession = "same-public-key";
+    const sessionTurn = async (model: string) => fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model, session_id: sharedSession, messages: [{ role: "user", content: "x" }] }),
+    }).then((response) => response.json());
+    assert((await sessionTurn("session-a/default")).choices[0].message.content === "session-a:fresh", "first adapter session starts fresh");
+    assert((await sessionTurn("session-b/default")).choices[0].message.content === "session-b:fresh", "same public key is isolated across adapters");
+    assert((await sessionTurn("session-a/default")).choices[0].message.content === "session-a:native", "first adapter session mapping is not overwritten");
+
     // Responses API non-stream + previous_response_id session chain
     const response = await fetch(`${base}/v1/responses`, {
       method: "POST",
@@ -191,6 +266,39 @@ async function main() {
       body: JSON.stringify({ model: "mock/echo", input: "second-turn", previous_response_id: response.id }),
     }).then((r) => r.json());
     assert(resumed.id !== response.id && resumed.status === "completed", "response session chain");
+    const collidingChat = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "mock/echo",
+        session_id: response.id,
+        messages: [{ role: "user", content: "chat-must-not-revive-response-id" }],
+      }),
+    });
+    assert(collidingChat.ok, "Chat may use a response-shaped session key in its own namespace");
+    const reusedPrevious = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model: "mock/echo", input: "must-not-branch", previous_response_id: response.id }),
+    });
+    assert(reusedPrevious.status === 400, "Chat session keys must not revive a consumed Responses id");
+
+    const chatOnlyResponseId = "resp_aaaaaaaaaaaaaaaaaaaaaaaa";
+    await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({
+        model: "mock/echo",
+        session_id: chatOnlyResponseId,
+        messages: [{ role: "user", content: "chat-only-session" }],
+      }),
+    });
+    const crossProtocolPrevious = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model: "mock/echo", input: "must-not-cross", previous_response_id: chatOnlyResponseId }),
+    });
+    assert(crossProtocolPrevious.status === 400, "Responses must not consume a Chat session mapping");
 
     // Responses semantic SSE events and function call events
     const responseStream = await fetch(`${base}/v1/responses`, {
@@ -212,6 +320,20 @@ async function main() {
     assert(responseEvents[0]?.type === "response.created", "response stream starts created");
     assert(responseEvents[1]?.type === "response.in_progress", "response stream enters in_progress");
     assert(responseEvents.every((event, index) => event.sequence_number === index), "response sequence numbers");
+
+    const completedStreamEvent = responseStream
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)) as { type: string; response?: { id?: string } })
+      .find((event) => event.type === "response.completed");
+    const streamedResponseId = completedStreamEvent?.response?.id;
+    assert(typeof streamedResponseId === "string", "streamed response exposes a resumable id only on completion");
+    const resumedStream = await fetch(`${base}/v1/responses`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model: "mock/echo", input: "after-stream", previous_response_id: streamedResponseId }),
+    }).then((r) => r.json());
+    assert(resumedStream.status === "completed", "completed stream response id resumes");
 
     const textResponseStream = await fetch(`${base}/v1/responses`, {
       method: "POST",
@@ -269,11 +391,18 @@ async function main() {
     });
     assert(malformedMessage.status === 400, "malformed message must be 400");
 
+    const oversized = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: authHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify({ model: "mock/echo", messages: [{ role: "user", content: "x".repeat(2 * 1_048_576) }] }),
+    });
+    assert(oversized.status === 413, "oversized body must be rejected before parsing");
+
     console.log("smoke ok");
     console.log(`  non-stream: ${content.slice(0, 80)}`);
     console.log(`  stream bytes: ${raw.length}`);
   } finally {
-    server.close();
+    await server.close();
   }
 }
 
