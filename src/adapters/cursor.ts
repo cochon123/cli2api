@@ -7,6 +7,9 @@ import type {
   ModelInfo,
   NormalizedChatRequest,
 } from "../types.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { requestToPrompt } from "../protocol/openai.js";
 import { runCommand, runCommandLines, which } from "../util/process.js";
 
@@ -21,6 +24,8 @@ export interface CursorAdapterOptions {
   mode?: "ask" | "plan";
   /** Headless Cursor requires explicit workspace trust. */
   trust?: boolean;
+  /** Run each request in a fresh empty workspace, then remove it. */
+  isolatedWorkspace?: boolean;
 }
 
 export type CursorParsedLine =
@@ -98,6 +103,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
   const timeoutMs = opts.timeoutMs ?? 180_000;
   const mode = opts.mode ?? "ask";
   const trust = opts.trust ?? true;
+  const isolatedWorkspace = opts.isolatedWorkspace ?? false;
 
   return {
     id: "cursor",
@@ -120,6 +126,20 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
           type: "error",
           message: `cursor-agent binary not found on PATH (looked for "${binary}"). Install Cursor Agent or set CLI2API_CURSOR_BIN.`,
           code: "binary_missing",
+        };
+        return;
+      }
+
+      let isolatedCwd: string | undefined;
+      try {
+        if (isolatedWorkspace) {
+          isolatedCwd = await mkdtemp(join(tmpdir(), "cli2api-cursor-"));
+        }
+      } catch (error) {
+        yield {
+          type: "error",
+          message: `Failed to create isolated Cursor workspace: ${error instanceof Error ? error.message : String(error)}`,
+          code: "workspace_error",
         };
         return;
       }
@@ -149,69 +169,75 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
       let stderr = "";
 
       try {
-        for await (const event of runCommandLines(path, args, {
-          cwd: opts.cwd,
-          timeoutMs,
-          signal,
-          inheritEnv: ["CURSOR_API_KEY"],
-        })) {
-          if (event.type === "stdout_line") {
-            const parsed = parseCursorLine(event.line);
-            if (parsed.kind === "session") {
-              yield { type: "session", id: parsed.id };
-            } else if (parsed.kind === "reasoning") {
-              yield { type: "delta", text: parsed.text, channel: "reasoning" };
-            } else if (parsed.kind === "content") {
-              // Cursor emits partial deltas, then repeats the full answer without a timestamp.
-              if (parsed.partial) {
-                sawPartialContent = true;
-                sawContent = true;
-                yield { type: "delta", text: parsed.text, channel: "content" };
-              } else if (!sawPartialContent) {
-                sawContent = true;
-                yield { type: "delta", text: parsed.text, channel: "content" };
+        try {
+          for await (const event of runCommandLines(path, args, {
+            cwd: isolatedCwd ?? opts.cwd,
+            timeoutMs,
+            signal,
+            inheritEnv: ["CURSOR_API_KEY"],
+          })) {
+            if (event.type === "stdout_line") {
+              const parsed = parseCursorLine(event.line);
+              if (parsed.kind === "session") {
+                yield { type: "session", id: parsed.id };
+              } else if (parsed.kind === "reasoning") {
+                yield { type: "delta", text: parsed.text, channel: "reasoning" };
+              } else if (parsed.kind === "content") {
+                // Cursor emits partial deltas, then repeats the full answer without a timestamp.
+                if (parsed.partial) {
+                  sawPartialContent = true;
+                  sawContent = true;
+                  yield { type: "delta", text: parsed.text, channel: "content" };
+                } else if (!sawPartialContent) {
+                  sawContent = true;
+                  yield { type: "delta", text: parsed.text, channel: "content" };
+                }
+              } else if (parsed.kind === "result") {
+                fallbackResult = parsed.text ?? fallbackResult;
+                usage = parsed.usage ?? usage;
+              } else if (parsed.kind === "error") {
+                yield { type: "error", message: parsed.message, code: "cli_error" };
+                return;
               }
-            } else if (parsed.kind === "result") {
-              fallbackResult = parsed.text ?? fallbackResult;
-              usage = parsed.usage ?? usage;
-            } else if (parsed.kind === "error") {
-              yield { type: "error", message: parsed.message, code: "cli_error" };
-              return;
+            } else if (event.type === "exit") {
+              exitCode = event.code;
+              timedOut = event.timedOut;
+              stderr = event.stderr;
             }
-          } else if (event.type === "exit") {
-            exitCode = event.code;
-            timedOut = event.timedOut;
-            stderr = event.stderr;
           }
+        } catch (error) {
+          yield {
+            type: "error",
+            message: `Failed to spawn cursor-agent: ${error instanceof Error ? error.message : String(error)}`,
+            code: "spawn_error",
+          };
+          return;
         }
-      } catch (error) {
-        yield {
-          type: "error",
-          message: `Failed to spawn cursor-agent: ${error instanceof Error ? error.message : String(error)}`,
-          code: "spawn_error",
-        };
-        return;
-      }
 
-      if (!sawContent && fallbackResult) {
-        sawContent = true;
-        yield { type: "delta", text: fallbackResult, channel: "content" };
-      }
+        if (!sawContent && fallbackResult) {
+          sawContent = true;
+          yield { type: "delta", text: fallbackResult, channel: "content" };
+        }
 
-      if (timedOut) {
-        yield { type: "error", message: `cursor-agent timed out after ${timeoutMs}ms`, code: "timeout" };
-      } else if (signal.aborted) {
-        yield { type: "error", message: "Aborted", code: "abort" };
-      } else if (exitCode !== 0) {
-        yield {
-          type: "error",
-          message: `cursor-agent exited with code ${exitCode}${stderr.trim() ? `: ${stderr.trim().slice(0, 2000)}` : ""}`,
-          code: "cli_error",
-        };
-      } else if (!sawContent) {
-        yield { type: "error", message: "cursor-agent returned empty output", code: "empty_output" };
-      } else {
-        yield { type: "done", finishReason: "stop", usage };
+        if (timedOut) {
+          yield { type: "error", message: `cursor-agent timed out after ${timeoutMs}ms`, code: "timeout" };
+        } else if (signal.aborted) {
+          yield { type: "error", message: "Aborted", code: "abort" };
+        } else if (exitCode !== 0) {
+          yield {
+            type: "error",
+            message: `cursor-agent exited with code ${exitCode}${stderr.trim() ? `: ${stderr.trim().slice(0, 2000)}` : ""}`,
+            code: "cli_error",
+          };
+        } else if (!sawContent) {
+          yield { type: "error", message: "cursor-agent returned empty output", code: "empty_output" };
+        } else {
+          yield { type: "done", finishReason: "stop", usage };
+        }
+      } finally {
+        if (isolatedCwd) {
+          await rm(isolatedCwd, { recursive: true, force: true });
+        }
       }
     },
 
@@ -227,6 +253,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
           version: (version.stdout || version.stderr).trim() || "not emitted without a TTY",
           mode,
           sandbox: "enabled",
+          isolatedWorkspace,
         },
         message: version.code === 0 ? "cursor-agent available" : "cursor-agent --version failed",
       };
@@ -245,7 +272,11 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
           detail: version ?? (result.code === 0 ? "available; CLI emitted no version without a TTY" : `exit ${result.code}`),
         });
       }
-      checks.push({ name: "restrictive-default", ok: mode === "ask" || mode === "plan", detail: `mode=${mode}; sandbox=enabled` });
+      checks.push({
+        name: "restrictive-default",
+        ok: mode === "ask" || mode === "plan",
+        detail: `mode=${mode}; sandbox=enabled; isolatedWorkspace=${isolatedWorkspace}`,
+      });
       return { adapter: "cursor", ok: checks.every((check) => check.ok), binary: path ?? binary, version, checks };
     },
   };

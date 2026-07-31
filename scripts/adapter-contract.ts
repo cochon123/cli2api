@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseOpenCodeLine, openCodeSessionId } from "../src/adapters/opencode.js";
-import { parseCursorLine } from "../src/adapters/cursor.js";
+import { createCursorAdapter, parseCursorLine } from "../src/adapters/cursor.js";
 import { parseClaudeLine } from "../src/adapters/claude.js";
 import { parseCodexLine } from "../src/adapters/codex.js";
 import { createRegistry } from "../src/adapters/registry.js";
+import { collectChatText } from "../src/adapters/types.js";
 import { buildChildEnv, runCommand } from "../src/util/process.js";
 import { loadConfig, withoutConfigArg } from "../src/config.js";
 import { SessionStore } from "../src/session.js";
@@ -249,11 +250,51 @@ async function timeoutContract(): Promise<void> {
   assert(Date.now() - started < 3_000, "timed-out child did not terminate promptly");
 }
 
+async function cursorIsolationContract(): Promise<void> {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(join(tmpdir(), "cli2api-cursor-test-"));
+  const configuredCwd = join(root, "answer-bearing-workspace");
+  const fakeCursor = join(root, "cursor-agent");
+  await mkdir(configuredCwd);
+  await writeFile(join(configuredCwd, "answers.json"), "{\"answer\":42}");
+  await writeFile(
+    fakeCursor,
+    [
+      "#!/usr/bin/env node",
+      "const cwd = process.cwd();",
+      "console.log(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: cwd }] } }));",
+      "console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: cwd }));",
+    ].join("\n"),
+  );
+  await chmod(fakeCursor, 0o755);
+
+  const request = normalizeChatRequest({
+    model: "cursor/test",
+    messages: [{ role: "user", content: "solve without files" }],
+  });
+  const normal = await collectChatText(
+    createCursorAdapter({ binary: fakeCursor, cwd: configuredCwd }).chat(request, new AbortController().signal),
+  );
+  assert.equal(normal.text, configuredCwd, "normal Cursor requests must preserve the configured workspace");
+
+  const isolated = await collectChatText(
+    createCursorAdapter({
+      binary: fakeCursor,
+      cwd: configuredCwd,
+      isolatedWorkspace: true,
+    }).chat(request, new AbortController().signal),
+  );
+  assert.notEqual(isolated.text, configuredCwd);
+  assert.match(isolated.text, /cli2api-cursor-/);
+  await assert.rejects(access(isolated.text), /ENOENT/, "isolated Cursor workspace was not removed");
+}
+
 parserContracts();
 envContract();
 toolAndSessionContracts();
 await configContract();
 await timeoutContract();
+await cursorIsolationContract();
 await registryContract();
 await openRouterCatalogContract();
 console.log("adapter contracts ok");
