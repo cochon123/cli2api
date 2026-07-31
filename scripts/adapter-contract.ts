@@ -3,7 +3,7 @@ import { access, chmod, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseOpenCodeLine, openCodeSessionId } from "../src/adapters/opencode.js";
-import { createCursorAdapter, parseCursorLine } from "../src/adapters/cursor.js";
+import { createCursorAdapter, DEFAULT_CURSOR_TIMEOUT_MS, parseCursorLine } from "../src/adapters/cursor.js";
 import { parseClaudeLine } from "../src/adapters/claude.js";
 import { parseCodexLine } from "../src/adapters/codex.js";
 import { createRegistry } from "../src/adapters/registry.js";
@@ -17,6 +17,7 @@ import { responsesToChat } from "../src/protocol/responses.js";
 import { OpenRouterCatalog } from "../src/openrouter/catalog.js";
 
 function parserContracts(): void {
+  assert.equal(DEFAULT_CURSOR_TIMEOUT_MS, 30 * 60_000);
   const openReasoning = parseOpenCodeLine(JSON.stringify({
     type: "reasoning",
     part: { type: "reasoning", text: "thinking" },

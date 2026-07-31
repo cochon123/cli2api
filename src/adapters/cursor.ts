@@ -14,6 +14,7 @@ import { requestToPrompt } from "../protocol/openai.js";
 import { runCommand, runCommandLines, which } from "../util/process.js";
 
 const DEFAULT_MODELS = ["default", "composer-2.5", "composer-2.5-fast"];
+export const DEFAULT_CURSOR_TIMEOUT_MS = 30 * 60_000;
 
 export interface CursorAdapterOptions {
   binary?: string;
@@ -100,7 +101,7 @@ export function parseCursorLine(line: string): CursorParsedLine {
 
 export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
   const binary = opts.binary ?? "cursor-agent";
-  const timeoutMs = opts.timeoutMs ?? 180_000;
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_CURSOR_TIMEOUT_MS;
   const mode = opts.mode ?? "ask";
   const trust = opts.trust ?? true;
   const isolatedWorkspace = opts.isolatedWorkspace ?? false;
