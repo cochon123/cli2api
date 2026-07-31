@@ -117,6 +117,7 @@ After `npm run build`, the bin is `cli2api`.
 | `CLI2API_OPENCODE_BIN` | Path/name of OpenCode binary |
 | `CLI2API_CURSOR_BIN` | Path/name of Cursor Agent binary |
 | `CLI2API_CURSOR_ISOLATED` | Set to `1` to run each Cursor request in a fresh empty temporary workspace |
+| `CLI2API_CURSOR_HIDE_PATHS` | On Linux, hide `:`-separated directories from isolated Cursor requests using a private mount namespace |
 | `CLI2API_CLAUDE_BIN` | Path/name of Claude Code binary |
 | `CLI2API_CWD` | Working directory for CLI adapters |
 | `CLI2API_CHILD_ENV_ALLOWLIST` | Comma-separated extra parent env names to explicitly pass to child CLIs |
@@ -249,6 +250,6 @@ scripts/smoke.ts
 - Child processes receive a scrubbed environment. Normal runtime paths/local config homes and narrowly scoped adapter auth variables are retained; unrelated parent secrets are removed. Add exceptional keys explicitly with `CLI2API_CHILD_ENV_ALLOWLIST`.
 - OpenCode runs with its `plan` agent and external plugins disabled.
 - Cursor runs in read-only `ask` mode with its sandbox enabled; `--trust` only acknowledges the configured working directory for headless startup.
-- For benchmarks or other prompts that must not inspect the configured codebase, start the server with `--cursor-isolated` (or `CLI2API_CURSOR_ISOLATED=1`). Each Cursor request receives a fresh empty temporary workspace that is removed when the request finishes.
+- For benchmarks or other prompts that must not inspect answer-bearing files, start the server with `--cursor-isolated` and `--cursor-hide-paths /path/to/benchmark:/path/to/backups` (or the matching environment variables). Each request receives a fresh temporary workspace, while the listed directories are empty only inside Cursor's private Linux mount namespace. The host filesystem is unchanged, and the workspace is removed when the request finishes. Mount masking requires permission to create mount namespaces (normally root or `CAP_SYS_ADMIN`).
 - Claude runs in `plan` mode with built-in tools disabled and configured MCP tools excluded.
 - You are responsible for complying with each CLI vendor’s terms for local use.

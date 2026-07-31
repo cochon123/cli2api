@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { randomUUID } from "node:crypto";
+import { delimiter } from "node:path";
 import { Command } from "commander";
 import { createRegistry } from "./adapters/registry.js";
 import { collectChatText } from "./adapters/types.js";
@@ -32,6 +33,10 @@ function envFlag(name: string): boolean | undefined {
   throw new Error(`${name} must be one of: 1, true, yes, on, 0, false, no, off`);
 }
 
+function pathList(value: string | undefined): string[] {
+  return value?.split(delimiter).map((item) => item.trim()).filter(Boolean) ?? [];
+}
+
 function isAdapterId(value: string | undefined): value is AdapterId {
   return value === "mock" || value === "codex" || value === "opencode" || value === "cursor" || value === "claude";
 }
@@ -42,6 +47,7 @@ interface RegistryCliOptions {
   opencodeBin?: string;
   cursorBin?: string;
   cursorIsolated?: boolean;
+  cursorHidePaths?: string;
   claudeBin?: string;
   cwd?: string;
 }
@@ -64,6 +70,7 @@ function buildRegistry(opts: RegistryCliOptions) {
       binary: opts.cursorBin ?? env("CLI2API_CURSOR_BIN") ?? loadedConfig.binaries?.cursor ?? "cursor-agent",
       cwd: opts.cwd ?? env("CLI2API_CWD") ?? loadedConfig.cwd,
       isolatedWorkspace: opts.cursorIsolated ?? envFlag("CLI2API_CURSOR_ISOLATED") ?? false,
+      hiddenPaths: pathList(opts.cursorHidePaths ?? env("CLI2API_CURSOR_HIDE_PATHS")),
     },
     claude: {
       binary: opts.claudeBin ?? env("CLI2API_CLAUDE_BIN") ?? loadedConfig.binaries?.claude ?? "claude",
@@ -95,6 +102,7 @@ program
   .option("--opencode-bin <path>", "OpenCode binary path", env("CLI2API_OPENCODE_BIN"))
   .option("--cursor-bin <path>", "Cursor Agent binary path", env("CLI2API_CURSOR_BIN"))
   .option("--cursor-isolated", "Run each Cursor request in a fresh empty workspace", envFlag("CLI2API_CURSOR_ISOLATED") ?? false)
+  .option("--cursor-hide-paths <paths>", `Hide ${delimiter}-separated directories from Cursor (Linux; requires --cursor-isolated)`, env("CLI2API_CURSOR_HIDE_PATHS"))
   .option("--claude-bin <path>", "Claude Code binary path", env("CLI2API_CLAUDE_BIN"))
   .option("--cwd <dir>", "Working directory for CLI adapters", env("CLI2API_CWD") ?? loadedConfig.cwd)
   .option("--openrouter-catalog <mode>", "OpenRouter model catalog: runnable|mirror", env("CLI2API_OPENROUTER_CATALOG") ?? loadedConfig.openRouter?.catalogMode ?? "runnable")
@@ -110,6 +118,7 @@ program
       opencodeBin: opts.opencodeBin,
       cursorBin: opts.cursorBin,
       cursorIsolated: opts.cursorIsolated,
+      cursorHidePaths: opts.cursorHidePaths,
       claudeBin: opts.claudeBin,
       cwd: opts.cwd,
     });

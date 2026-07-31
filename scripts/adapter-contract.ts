@@ -3,7 +3,7 @@ import { access, chmod, mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseOpenCodeLine, openCodeSessionId } from "../src/adapters/opencode.js";
-import { createCursorAdapter, DEFAULT_CURSOR_TIMEOUT_MS, parseCursorLine } from "../src/adapters/cursor.js";
+import { createCursorAdapter, DEFAULT_CURSOR_TIMEOUT_MS, parseCursorLine, wrapCursorWithMountMask } from "../src/adapters/cursor.js";
 import { parseClaudeLine } from "../src/adapters/claude.js";
 import { parseCodexLine } from "../src/adapters/codex.js";
 import { createRegistry } from "../src/adapters/registry.js";
@@ -288,6 +288,24 @@ async function cursorIsolationContract(): Promise<void> {
   assert.notEqual(isolated.text, configuredCwd);
   assert.match(isolated.text, /cli2api-cursor-/);
   await assert.rejects(access(isolated.text), /ENOENT/, "isolated Cursor workspace was not removed");
+
+  const masked = wrapCursorWithMountMask(
+    "/usr/bin/unshare",
+    "/usr/bin/cursor-agent",
+    ["-p", "prompt with spaces"],
+    "/tmp/empty mask",
+    ["/srv/answers one", "/srv/answers-two"],
+  );
+  assert.equal(masked.command, "/usr/bin/unshare");
+  assert.deepEqual(masked.args.slice(0, 5), ["--mount", "--propagation", "private", "/bin/sh", "-c"]);
+  assert.deepEqual(masked.args.slice(-6), [
+    "/srv/answers one",
+    "/srv/answers-two",
+    "--",
+    "/usr/bin/cursor-agent",
+    "-p",
+    "prompt with spaces",
+  ]);
 }
 
 parserContracts();

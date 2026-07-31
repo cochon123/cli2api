@@ -7,7 +7,7 @@ import type {
   ModelInfo,
   NormalizedChatRequest,
 } from "../types.js";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { requestToPrompt } from "../protocol/openai.js";
@@ -27,6 +27,46 @@ export interface CursorAdapterOptions {
   trust?: boolean;
   /** Run each request in a fresh empty workspace, then remove it. */
   isolatedWorkspace?: boolean;
+  /** Existing directories to mask inside a private Linux mount namespace. */
+  hiddenPaths?: string[];
+}
+
+const MASK_SCRIPT = [
+  "set -eu",
+  'empty="$1"',
+  "shift",
+  'while [ "$1" != "--" ]; do',
+  '  mount --bind "$empty" "$1"',
+  "  shift",
+  "done",
+  "shift",
+  'exec "$@"',
+].join("\n");
+
+export function wrapCursorWithMountMask(
+  unsharePath: string,
+  binary: string,
+  args: string[],
+  emptyDir: string,
+  hiddenPaths: string[],
+): { command: string; args: string[] } {
+  return {
+    command: unsharePath,
+    args: [
+      "--mount",
+      "--propagation",
+      "private",
+      "/bin/sh",
+      "-c",
+      MASK_SCRIPT,
+      "cli2api-cursor-mask",
+      emptyDir,
+      ...hiddenPaths,
+      "--",
+      binary,
+      ...args,
+    ],
+  };
 }
 
 export type CursorParsedLine =
@@ -105,6 +145,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
   const mode = opts.mode ?? "ask";
   const trust = opts.trust ?? true;
   const isolatedWorkspace = opts.isolatedWorkspace ?? false;
+  const hiddenPaths = [...new Set(opts.hiddenPaths ?? [])];
 
   return {
     id: "cursor",
@@ -127,6 +168,15 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
           type: "error",
           message: `cursor-agent binary not found on PATH (looked for "${binary}"). Install Cursor Agent or set CLI2API_CURSOR_BIN.`,
           code: "binary_missing",
+        };
+        return;
+      }
+
+      if (hiddenPaths.length && !isolatedWorkspace) {
+        yield {
+          type: "error",
+          message: "Cursor hidden paths require isolatedWorkspace=true",
+          code: "workspace_error",
         };
         return;
       }
@@ -161,6 +211,49 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
       if (opts.extraArgs?.length) args.push(...opts.extraArgs);
       args.push(requestToPrompt(req));
 
+      let command = path;
+      let commandArgs = args;
+      if (hiddenPaths.length) {
+        if (process.platform !== "linux") {
+          await rm(isolatedCwd!, { recursive: true, force: true });
+          yield {
+            type: "error",
+            message: "Cursor hidden paths require Linux mount namespaces",
+            code: "workspace_error",
+          };
+          return;
+        }
+        const unsharePath = await which("unshare");
+        if (!unsharePath) {
+          await rm(isolatedCwd!, { recursive: true, force: true });
+          yield {
+            type: "error",
+            message: "Cursor hidden paths require the unshare binary",
+            code: "binary_missing",
+          };
+          return;
+        }
+        const existingHiddenPaths: string[] = [];
+        for (const hiddenPath of hiddenPaths) {
+          try {
+            if ((await stat(hiddenPath)).isDirectory()) existingHiddenPaths.push(hiddenPath);
+          } catch {
+            // A missing path exposes nothing and does not need a mount.
+          }
+        }
+        if (existingHiddenPaths.length) {
+          const emptyDir = join(isolatedCwd!, ".cli2api-mask");
+          await mkdir(emptyDir);
+          ({ command, args: commandArgs } = wrapCursorWithMountMask(
+            unsharePath,
+            path,
+            args,
+            emptyDir,
+            existingHiddenPaths,
+          ));
+        }
+      }
+
       let sawContent = false;
       let sawPartialContent = false;
       let fallbackResult = "";
@@ -171,7 +264,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
 
       try {
         try {
-          for await (const event of runCommandLines(path, args, {
+          for await (const event of runCommandLines(command, commandArgs, {
             cwd: isolatedCwd ?? opts.cwd,
             timeoutMs,
             signal,
@@ -255,6 +348,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
           mode,
           sandbox: "enabled",
           isolatedWorkspace,
+          hiddenPathCount: hiddenPaths.length,
         },
         message: version.code === 0 ? "cursor-agent available" : "cursor-agent --version failed",
       };
@@ -276,7 +370,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
       checks.push({
         name: "restrictive-default",
         ok: mode === "ask" || mode === "plan",
-        detail: `mode=${mode}; sandbox=enabled; isolatedWorkspace=${isolatedWorkspace}`,
+        detail: `mode=${mode}; sandbox=enabled; isolatedWorkspace=${isolatedWorkspace}; hiddenPathCount=${hiddenPaths.length}`,
       });
       return { adapter: "cursor", ok: checks.every((check) => check.ok), binary: path ?? binary, version, checks };
     },
