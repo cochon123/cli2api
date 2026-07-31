@@ -298,8 +298,10 @@ async function cursorIsolationContract(): Promise<void> {
   );
   assert.equal(masked.command, "/usr/bin/unshare");
   assert.deepEqual(masked.args.slice(0, 5), ["--mount", "--propagation", "private", "/bin/sh", "-c"]);
-  assert.deepEqual(masked.args.slice(-6), [
+  assert.deepEqual(masked.args.slice(-8), [
+    "/tmp/empty mask/0",
     "/srv/answers one",
+    "/tmp/empty mask/1",
     "/srv/answers-two",
     "--",
     "/usr/bin/cursor-agent",

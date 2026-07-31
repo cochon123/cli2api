@@ -33,11 +33,11 @@ export interface CursorAdapterOptions {
 
 const MASK_SCRIPT = [
   "set -eu",
-  'empty="$1"',
-  "shift",
   'while [ "$1" != "--" ]; do',
-  '  mount --bind "$empty" "$1"',
-  "  shift",
+  '  source="$1"',
+  '  target="$2"',
+  "  shift 2",
+  '  mount --bind "$source" "$target"',
   "done",
   "shift",
   'exec "$@"',
@@ -60,8 +60,7 @@ export function wrapCursorWithMountMask(
       "-c",
       MASK_SCRIPT,
       "cli2api-cursor-mask",
-      emptyDir,
-      ...hiddenPaths,
+      ...hiddenPaths.flatMap((hiddenPath, index) => [join(emptyDir, String(index)), hiddenPath]),
       "--",
       binary,
       ...args,
@@ -244,6 +243,7 @@ export function createCursorAdapter(opts: CursorAdapterOptions = {}): Adapter {
         if (existingHiddenPaths.length) {
           const emptyDir = join(isolatedCwd!, ".cli2api-mask");
           await mkdir(emptyDir);
+          await Promise.all(existingHiddenPaths.map((_, index) => mkdir(join(emptyDir, String(index)))));
           ({ command, args: commandArgs } = wrapCursorWithMountMask(
             unsharePath,
             path,
