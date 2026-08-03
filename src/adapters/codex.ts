@@ -359,7 +359,7 @@ function buildExecArgs(
 
 export function createCodexAdapter(opts: CodexAdapterOptions = {}): Adapter {
   const binary = opts.binary ?? "codex";
-  const timeoutMs = opts.timeoutMs ?? 180_000;
+  const timeoutMs = opts.timeoutMs ?? 1_800_000;
   const sandbox = opts.sandbox ?? "read-only";
   const skipGitRepoCheck = opts.skipGitRepoCheck ?? true;
   const wordDelay =

@@ -141,6 +141,8 @@ program
           metadataUrl: loadedConfig.openRouter?.metadataUrl,
           metadataTtlSeconds: loadedConfig.openRouter?.metadataTtlSeconds,
           metadataCachePath: loadedConfig.openRouter?.metadataCachePath,
+          pricingEnabled: loadedConfig.openRouter?.pricingEnabled,
+          pricingModelMappings: loadedConfig.openRouter?.pricingModelMappings,
           apiKey: env("OPENROUTER_API_KEY"),
         },
       });

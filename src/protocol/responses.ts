@@ -1,4 +1,4 @@
-import type { ChatCompletionRequest, ChatMessage, ChatTool, ToolCall } from "../types.js";
+import type { ChatCompletionRequest, ChatMessage, ChatTool, TokenUsage, ToolCall } from "../types.js";
 
 export interface ResponsesRequest {
   model: string;
@@ -114,7 +114,13 @@ export interface ResponseObject {
   status: "in_progress" | "completed" | "failed";
   model: string;
   output: Array<Record<string, unknown>>;
-  usage?: { input_tokens: number; output_tokens: number; total_tokens: number };
+  usage?: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    cost?: number;
+    cost_details?: TokenUsage["cost_details"];
+  };
   error: null | { message: string; code?: string };
   incomplete_details: null;
 }
@@ -139,7 +145,7 @@ export function functionOutput(call: ToolCall): Record<string, unknown> {
 
 export function buildResponse(opts: {
   id: string; model: string; text?: string; reasoning?: string; toolCalls?: ToolCall[];
-  usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };
+  usage?: TokenUsage;
   status?: ResponseObject["status"]; error?: ResponseObject["error"];
 }): ResponseObject {
   const output: Array<Record<string, unknown>> = [];
@@ -149,7 +155,13 @@ export function buildResponse(opts: {
   return {
     id: opts.id, object: "response", created_at: Math.floor(Date.now() / 1000),
     status: opts.status ?? "completed", model: opts.model, output,
-    usage: opts.usage ? { input_tokens: opts.usage.prompt_tokens, output_tokens: opts.usage.completion_tokens, total_tokens: opts.usage.total_tokens } : undefined,
+    usage: opts.usage ? {
+      input_tokens: opts.usage.prompt_tokens,
+      output_tokens: opts.usage.completion_tokens,
+      total_tokens: opts.usage.total_tokens,
+      ...(opts.usage.cost !== undefined ? { cost: opts.usage.cost } : {}),
+      ...(opts.usage.cost_details ? { cost_details: opts.usage.cost_details } : {}),
+    } : undefined,
     error: opts.error ?? null, incomplete_details: null,
   };
 }

@@ -40,6 +40,9 @@ export interface ChatCompletionRequest {
   model: string;
   messages: ChatMessage[];
   stream?: boolean;
+  stream_options?: {
+    include_usage?: boolean;
+  };
   temperature?: number;
   max_tokens?: number;
   max_completion_tokens?: number;
@@ -65,6 +68,34 @@ export interface ChatCompletionRequest {
   [key: string]: unknown;
 }
 
+export interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  prompt_tokens_details?: {
+    cached_tokens?: number;
+    cache_write_tokens?: number;
+  };
+  completion_tokens_details?: {
+    reasoning_tokens?: number;
+  };
+  /** OpenRouter-equivalent estimated cost in USD, not the CLI subscription charge. */
+  cost?: number;
+  cost_details?: {
+    estimated: true;
+    currency: "USD";
+    pricing_source: "openrouter";
+    pricing_model: string;
+    pricing_fetched_at: string;
+    prompt_cost: number;
+    completion_cost: number;
+    cache_read_cost: number;
+    cache_write_cost: number;
+    request_cost: number;
+    pricing: Record<string, string>;
+  };
+}
+
 export interface ChatCompletionChoice {
   index: number;
   message: {
@@ -85,11 +116,7 @@ export interface ChatCompletionResponse {
   created: number;
   model: string;
   choices: ChatCompletionChoice[];
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  };
+  usage?: TokenUsage;
 }
 
 export interface ChatCompletionChunk {

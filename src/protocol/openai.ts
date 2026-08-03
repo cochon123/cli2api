@@ -126,6 +126,14 @@ export function normalizeChatRequest(body: ChatCompletionRequest): NormalizedCha
     }
   }
   if (body.stream !== undefined && typeof body.stream !== "boolean") invalid("`stream` must be a boolean");
+  if (body.stream_options !== undefined) {
+    if (!body.stream_options || typeof body.stream_options !== "object" || Array.isArray(body.stream_options)) {
+      invalid("`stream_options` must be an object");
+    }
+    if (body.stream_options.include_usage !== undefined && typeof body.stream_options.include_usage !== "boolean") {
+      invalid("`stream_options.include_usage` must be a boolean");
+    }
+  }
   if (body.temperature !== undefined && (!Number.isFinite(body.temperature) || body.temperature < 0 || body.temperature > 2)) {
     invalid("`temperature` must be between 0 and 2");
   }

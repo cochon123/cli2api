@@ -143,6 +143,10 @@ JSON config is merged in this order: `$XDG_CONFIG_HOME/cli2api/config.json`, pro
     "defaultModel": "anthropic/claude-sonnet-4",
     "catalogMode": "runnable",
     "annotateAvailability": true,
+    "pricingEnabled": true,
+    "pricingModelMappings": {
+      "cursor/cursor-grok-4.5-high": "x-ai/grok-4.5"
+    },
     "modelRoutes": {
       "anthropic/claude-sonnet-4": {
         "adapter": "claude",
@@ -192,7 +196,9 @@ The OpenRouter catalog has two modes:
 
 Select the mode in config or with `cli2api serve --openrouter-catalog runnable|mirror`.
 
-Metadata is cached for 24 hours at `$XDG_CACHE_HOME/cli2api/openrouter-models.json` (or `~/.cache/cli2api/openrouter-models.json`). Stale data is used if refresh fails. Configure `metadataTtlSeconds`, `metadataCachePath`, or `metadataUrl` under `openRouter` when needed. Pricing fields describe OpenRouter's hosted service, not local CLI execution.
+Metadata is cached for 24 hours at `$XDG_CACHE_HOME/cli2api/openrouter-models.json` (or `~/.cache/cli2api/openrouter-models.json`). Stale data is used if refresh fails. Configure `metadataTtlSeconds`, `metadataCachePath`, or `metadataUrl` under `openRouter` when needed.
+
+When a native CLI reports token usage, cli2api uses that cached catalog to add `usage.cost` and `usage.cost_details`. This is an **OpenRouter-equivalent estimate**, not the amount charged by a CLI subscription. Set `openRouter.pricingEnabled` to `false` to disable it. Common OpenAI, Anthropic, Google, DeepSeek, and xAI ids are inferred; use `pricingModelMappings` for CLI-specific ids or aliases. Unknown models keep their token usage and omit cost instead of inventing a price. Streaming `/v1/chat/completions` requests receive the final usage/cost chunk when `stream_options.include_usage` is true; `/api/v1` includes it automatically.
 
 For safety, `OPENROUTER_API_KEY` is sent only to the canonical `https://openrouter.ai` origin. Custom `metadataUrl` sources never receive it. Cache entries are tied to their source URL so catalogs cannot be mixed across sources.
 

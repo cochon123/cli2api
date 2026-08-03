@@ -176,6 +176,7 @@ export function createApp(opts: ServerOptions): Hono {
     const includeReasoning = body.include_reasoning !== false
       && body.reasoning?.exclude !== true
       && body.reasoning?.enabled !== false;
+    const includeUsage = openRouter || body.stream_options?.include_usage === true;
     const ac = new AbortController();
     c.req.raw.signal.addEventListener("abort", () => ac.abort(), { once: true });
 
@@ -248,13 +249,14 @@ export function createApp(opts: ServerOptions): Hono {
                   buildChunk({ id, model: requestedModel, finishReason: ev.finishReason, openRouter }),
                 ),
               });
-              if (openRouter && ev.usage) {
+              if (includeUsage && ev.usage) {
+                const usage = await openRouterCatalog.withEstimatedCost(requestedModel, req.model, ev.usage);
                 await stream.writeSSE({
                   data: JSON.stringify(buildChunk({
                     id,
                     model: requestedModel,
-                    usage: ev.usage,
-                    openRouter: true,
+                    usage,
+                    openRouter,
                     emptyChoices: true,
                   })),
                 });
@@ -288,7 +290,7 @@ export function createApp(opts: ServerOptions): Hono {
         model: requestedModel,
         content: result.text,
         finishReason: result.finishReason,
-        usage: result.usage,
+        usage: await openRouterCatalog.withEstimatedCost(requestedModel, req.model, result.usage),
         toolCalls: result.toolCalls,
         reasoning: includeReasoning ? result.reasoning : undefined,
         openRouter,
@@ -418,7 +420,7 @@ export function createApp(opts: ServerOptions): Hono {
               await writeEvent("response.failed", { response: failed });
               return;
             } else if (ev.type === "done") {
-              usage = ev.usage;
+              usage = await openRouterCatalog.withEstimatedCost(requestedModel, req.model, ev.usage);
             }
           }
           if (reasoningOutputIndex >= 0) {
@@ -454,7 +456,8 @@ export function createApp(opts: ServerOptions): Hono {
       const result = await collectChatText(transformToolEvents(adapter.chat(req, ac.signal), req));
       if (result.nativeSessionId) sessions.set(id, adapter.id, result.nativeSessionId);
       if (result.error) return c.json({ error: { message: result.error, type: "server_error" } }, 502);
-      return c.json(buildResponse({ id, model: requestedModel, text: result.text, reasoning: result.reasoning, toolCalls: result.toolCalls, usage: result.usage }));
+      const usage = await openRouterCatalog.withEstimatedCost(requestedModel, req.model, result.usage);
+      return c.json(buildResponse({ id, model: requestedModel, text: result.text, reasoning: result.reasoning, toolCalls: result.toolCalls, usage }));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return c.json({ error: { message, type: "server_error" } }, 500);

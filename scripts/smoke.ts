@@ -41,6 +41,7 @@ async function main() {
         context_length: 12345,
         supported_parameters: ["tools", "tool_choice", "reasoning", "temperature"],
         architecture: { input_modalities: ["text"], output_modalities: ["text"] },
+        pricing: { prompt: "0.000002", completion: "0.000006", request: "0" },
       }] }), { headers: { "Content-Type": "application/json" } }),
       metadataCachePath: `/tmp/cli2api-smoke-openrouter-models-${process.pid}.json`,
       metadataTtlSeconds: 60,
@@ -88,6 +89,8 @@ async function main() {
     assert(openRouterCompletion.model === "openai/gpt-local-test", "public model id preserved");
     assert(openRouterCompletion.choices[0].native_finish_reason === "stop", "native finish reason");
     assert(openRouterCompletion.choices[0].message.reasoning === "mock reasoning", "non-stream reasoning");
+    assert(openRouterCompletion.usage?.cost > 0, "estimated OpenRouter-equivalent cost");
+    assert(openRouterCompletion.usage?.cost_details?.pricing_model === "openai/gpt-local-test", "pricing model metadata");
 
     const defaultModelCompletion = await fetch(`${base}/api/v1/chat/completions`, {
       method: "POST",
@@ -128,6 +131,7 @@ async function main() {
       body: JSON.stringify({ model: "openai/gpt-local-test", input: "openrouter-response" }),
     }).then((r) => r.json());
     assert(openRouterResponse.object === "response" && openRouterResponse.model === "openai/gpt-local-test", "OpenRouter Responses path and public model");
+    assert(openRouterResponse.usage?.cost > 0, "Responses API estimated cost");
 
     // Non-stream
     const completion = await fetch(`${base}/v1/chat/completions`, {
@@ -150,6 +154,7 @@ async function main() {
       body: JSON.stringify({
         model: "mock/echo",
         stream: true,
+        stream_options: { include_usage: true },
         messages: [{ role: "user", content: "stream-me" }],
       }),
     });
@@ -158,6 +163,10 @@ async function main() {
     assert(raw.includes("data:"), "sse data lines");
     assert(raw.includes("[DONE]"), "sse done");
     assert(raw.includes("stream-me"), "streamed echo");
+    const openAiChunks = raw.split("\n")
+      .filter((line) => line.startsWith("data: {") && !line.includes("[DONE]"))
+      .map((line) => JSON.parse(line.slice(6)));
+    assert(openAiChunks.some((chunk) => chunk.choices?.length === 0 && chunk.usage?.total_tokens), "OpenAI stream usage chunk");
 
     // Chat Completions function calling
     const toolCompletion = await fetch(`${base}/v1/chat/completions`, {

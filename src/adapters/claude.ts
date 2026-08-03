@@ -110,7 +110,7 @@ export function parseClaudeLine(line: string): ClaudeParsedLine[] {
 
 export function createClaudeAdapter(opts: ClaudeAdapterOptions = {}): Adapter {
   const binary = opts.binary ?? "claude";
-  const timeoutMs = opts.timeoutMs ?? 180_000;
+  const timeoutMs = opts.timeoutMs ?? 1_800_000;
 
   return {
     id: "claude",

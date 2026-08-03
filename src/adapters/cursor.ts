@@ -124,7 +124,19 @@ export function parseCursorLine(line: string): CursorParsedLine {
     if (rawUsage) {
       const prompt = typeof rawUsage.inputTokens === "number" ? rawUsage.inputTokens : 0;
       const completion = typeof rawUsage.outputTokens === "number" ? rawUsage.outputTokens : 0;
-      usage = { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion };
+      const cached = typeof rawUsage.cacheReadTokens === "number" ? rawUsage.cacheReadTokens : undefined;
+      const cacheWrite = typeof rawUsage.cacheWriteTokens === "number" ? rawUsage.cacheWriteTokens : undefined;
+      usage = {
+        prompt_tokens: prompt,
+        completion_tokens: completion,
+        total_tokens: prompt + completion,
+        ...((cached !== undefined || cacheWrite !== undefined) ? {
+          prompt_tokens_details: {
+            ...(cached !== undefined ? { cached_tokens: cached } : {}),
+            ...(cacheWrite !== undefined ? { cache_write_tokens: cacheWrite } : {}),
+          },
+        } : {}),
+      };
     }
     return {
       kind: "result",

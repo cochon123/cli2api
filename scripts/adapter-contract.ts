@@ -58,6 +58,17 @@ function parserContracts(): void {
   }));
   assert.deepEqual(cursorFinal, { kind: "content", text: "CURSOR_OK", partial: false });
 
+  const cursorResult = parseCursorLine(JSON.stringify({
+    type: "result",
+    usage: { inputTokens: 100, outputTokens: 20, cacheReadTokens: 40, cacheWriteTokens: 5 },
+  }));
+  assert.equal(cursorResult.kind, "result");
+  if (cursorResult.kind === "result") {
+    assert.equal(cursorResult.usage?.total_tokens, 120);
+    assert.equal(cursorResult.usage?.prompt_tokens_details?.cached_tokens, 40);
+    assert.equal(cursorResult.usage?.prompt_tokens_details?.cache_write_tokens, 5);
+  }
+
   const claudeText = parseClaudeLine(JSON.stringify({
     type: "stream_event",
     event: { type: "content_block_delta", delta: { type: "text_delta", text: "CLAUDE" } },

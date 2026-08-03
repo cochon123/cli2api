@@ -23,6 +23,8 @@ const configSchema = z.object({
     metadataUrl: z.string().url().optional(),
     metadataTtlSeconds: z.number().int().min(60).optional(),
     metadataCachePath: z.string().min(1).optional(),
+    pricingEnabled: z.boolean().optional(),
+    pricingModelMappings: z.record(z.string().min(1)).optional(),
   }).strict().optional(),
   binaries: z.object({
     codex: z.string().min(1).optional(),
@@ -70,6 +72,10 @@ function mergeConfig(base: Cli2ApiConfig, next: Cli2ApiConfig): Cli2ApiConfig {
       ...base.openRouter,
       ...next.openRouter,
       modelRoutes: { ...base.openRouter?.modelRoutes, ...next.openRouter?.modelRoutes },
+      pricingModelMappings: {
+        ...base.openRouter?.pricingModelMappings,
+        ...next.openRouter?.pricingModelMappings,
+      },
     } : undefined,
     binaries: { ...base.binaries, ...next.binaries },
   };

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { AdapterRegistry } from "../adapters/registry.js";
-import type { ModelInfo } from "../types.js";
+import type { ModelInfo, TokenUsage } from "../types.js";
 
 export type OpenRouterCatalogMode = "runnable" | "mirror";
 
@@ -14,6 +14,10 @@ export interface OpenRouterCatalogOptions {
   metadataCachePath?: string;
   apiKey?: string;
   fetchImpl?: typeof fetch;
+  /** Add an OpenRouter-equivalent USD estimate to native CLI usage. Defaults to true. */
+  pricingEnabled?: boolean;
+  /** Explicit cli2api/local model id to OpenRouter model id mappings. */
+  pricingModelMappings?: Record<string, string>;
 }
 
 interface CacheEnvelope {
@@ -86,6 +90,8 @@ export class OpenRouterCatalog {
   private readonly path: string;
   private readonly apiKey?: string;
   private readonly fetchImpl: typeof fetch;
+  private readonly pricingEnabled: boolean;
+  private readonly pricingModelMappings: Readonly<Record<string, string>>;
   private memory?: CacheEnvelope;
   private refresh?: Promise<CacheEnvelope | undefined>;
 
@@ -97,6 +103,8 @@ export class OpenRouterCatalog {
     this.path = cachePath(opts.metadataCachePath);
     this.apiKey = opts.apiKey;
     this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.pricingEnabled = opts.pricingEnabled ?? true;
+    this.pricingModelMappings = Object.freeze({ ...(opts.pricingModelMappings ?? {}) });
   }
 
   private async readCache(): Promise<CacheEnvelope | undefined> {
@@ -177,5 +185,95 @@ export class OpenRouterCatalog {
       return [this.annotateAvailability ? annotate(merged, this.registry) : merged];
     });
     return filterModels(models, query);
+  }
+
+  private pricingCandidates(requestedModel: string, resolvedModel: string): string[] {
+    const values = [
+      this.pricingModelMappings[requestedModel],
+      this.pricingModelMappings[resolvedModel],
+      requestedModel,
+      resolvedModel,
+    ].filter((value): value is string => Boolean(value));
+    const local = resolvedModel.replace(/^(mock|codex|cursor|claude|opencode)\//, "");
+    values.push(local.replace(/^openrouter\//, ""));
+
+    const normalized = local
+      .replace(/^cursor-/, "")
+      .replace(/-(?:xhigh|high|medium|low)$/i, "");
+    if (/^(?:gpt-|o[134](?:-|$))/.test(normalized)) values.push(`openai/${normalized}`);
+    if (/^grok-/.test(normalized)) values.push(`x-ai/${normalized}`);
+    if (/^claude-/.test(normalized)) values.push(`anthropic/${normalized}`);
+    if (/^gemini-/.test(normalized)) values.push(`google/${normalized}`);
+    if (/^deepseek-/.test(normalized)) values.push(`deepseek/${normalized}`);
+
+    for (const [publicId, route] of Object.entries(this.registry.modelRoutes)) {
+      if (`${route.adapter}/${route.model}` === resolvedModel) values.push(publicId);
+    }
+    return [...new Set(values)];
+  }
+
+  async withEstimatedCost(
+    requestedModel: string,
+    resolvedModel: string,
+    usage: TokenUsage | undefined,
+  ): Promise<TokenUsage | undefined> {
+    if (!usage || !this.pricingEnabled) return usage;
+    const snapshot = await this.upstream();
+    if (!snapshot) return usage;
+    const byId = new Map(snapshot.data.map((model) => [modelId(model), model]));
+    const pricingModel = this.pricingCandidates(requestedModel, resolvedModel)
+      .map((candidate) => byId.get(candidate))
+      .find(Boolean);
+    if (!pricingModel) return usage;
+    const id = modelId(pricingModel);
+    const rawPricing = isRecord(pricingModel.pricing) ? pricingModel.pricing : undefined;
+    if (!id || !rawPricing) return usage;
+
+    const rate = (key: string): number | undefined => {
+      const value = rawPricing[key];
+      const parsed = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+      return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+    };
+    const promptRate = rate("prompt");
+    const completionRate = rate("completion");
+    if (promptRate === undefined || completionRate === undefined) return usage;
+
+    const cachedTokens = Math.max(0, usage.prompt_tokens_details?.cached_tokens ?? 0);
+    const cacheWriteTokens = Math.max(0, usage.prompt_tokens_details?.cache_write_tokens ?? 0);
+    const uncachedPromptTokens = Math.max(0, usage.prompt_tokens - cachedTokens - cacheWriteTokens);
+    const reasoningTokens = Math.max(0, usage.completion_tokens_details?.reasoning_tokens ?? 0);
+    const regularCompletionTokens = Math.max(0, usage.completion_tokens - reasoningTokens);
+    const cacheReadRate = rate("input_cache_read") ?? promptRate;
+    const cacheWriteRate = rate("input_cache_write") ?? promptRate;
+    const reasoningRate = rate("internal_reasoning") ?? completionRate;
+    const requestCost = rate("request") ?? 0;
+    const promptCost = uncachedPromptTokens * promptRate;
+    const cacheReadCost = cachedTokens * cacheReadRate;
+    const cacheWriteCost = cacheWriteTokens * cacheWriteRate;
+    const completionCost = regularCompletionTokens * completionRate + reasoningTokens * reasoningRate;
+    const cost = promptCost + cacheReadCost + cacheWriteCost + completionCost + requestCost;
+    const pricing = Object.fromEntries(
+      Object.entries(rawPricing)
+        .filter((entry): entry is [string, string | number] => typeof entry[1] === "string" || typeof entry[1] === "number")
+        .map(([key, value]) => [key, String(value)]),
+    );
+
+    return {
+      ...usage,
+      cost,
+      cost_details: {
+        estimated: true,
+        currency: "USD",
+        pricing_source: "openrouter",
+        pricing_model: id,
+        pricing_fetched_at: new Date(snapshot.fetchedAt).toISOString(),
+        prompt_cost: promptCost,
+        completion_cost: completionCost,
+        cache_read_cost: cacheReadCost,
+        cache_write_cost: cacheWriteCost,
+        request_cost: requestCost,
+        pricing,
+      },
+    };
   }
 }

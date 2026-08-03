@@ -100,7 +100,7 @@ function localModel(model: string): string | null {
 
 export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapter {
   const binary = opts.binary ?? "opencode";
-  const timeoutMs = opts.timeoutMs ?? 180_000;
+  const timeoutMs = opts.timeoutMs ?? 1_800_000;
   const agent = opts.agent ?? "plan";
   const wordDelay = opts.contentWordDelayMs ?? DEFAULT_WORD_DELAY_MS;
 
@@ -129,7 +129,7 @@ export function createOpenCodeAdapter(opts: OpenCodeAdapterOptions = {}): Adapte
         return;
       }
 
-      const args = ["run", "--pure", "--format", "json", "--thinking", "--agent", agent];
+      const args = ["run", "--format", "json", "--thinking", "--agent", agent];
       if (req.nativeSessionId) args.push("--session", req.nativeSessionId);
       const model = localModel(req.modelLocal);
       if (model) args.push("--model", model);
