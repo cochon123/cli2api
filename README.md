@@ -6,6 +6,20 @@ Point any OpenAI SDK / benchmark at localhost and run against **Codex, OpenCode,
 
 > **Local only.** Binds to `127.0.0.1` by default. Not a multi-tenant product. Do not expose your CLI auth to the network.
 
+![Terminal demo: install cli2api, start the mock adapter, and complete an OpenAI chat request](docs/media/demo.gif)
+
+The recording installs the published package, starts the built-in mock adapter, and sends a real `POST /v1/chat/completions`. The mock adapter needs no CLI login. Codex, OpenCode, Cursor Agent, and Claude Code use the same gateway once those CLIs are installed.
+
+```mermaid
+flowchart LR
+  Client["OpenAI or OpenRouter client"] --> Gateway["cli2api"]
+  Gateway --> Codex
+  Gateway --> OpenCode
+  Gateway --> Cursor["Cursor Agent"]
+  Gateway --> Claude["Claude Code"]
+  Gateway --> Mock["mock"]
+```
+
 ## 30-second start
 
 Install the published package globally:
